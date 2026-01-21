@@ -1,6 +1,6 @@
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import ContextTypes, ConversationHandler
-from datetime import datetime
+from datetime import datetime, timedelta
 import re
 
 # Определяем состояния для ConversationHandler
@@ -20,6 +20,65 @@ class BookingHandlers:
         ]
         return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
     
+    def _get_date_keyboard(self):
+        """Создает клавиатуру с датами на 5 дней вперед"""
+        keyboard = []
+        row = []
+        
+        # Текущая дата
+        today = datetime.now()
+        
+        # Добавляем даты со следующего дня
+        for i in range(1, 6):  # 5 дней вперед
+            date = today + timedelta(days=i)
+            date_str = date.strftime('%d.%m.%Y')
+            
+            # Форматируем красиво
+            day_name = self._get_day_name(date.weekday())
+            date_display = f"{date_str} ({day_name})"
+            
+            row.append(date_display)
+            
+            # Каждые 2 даты в строку
+            if len(row) == 2:
+                keyboard.append(row)
+                row = []
+        
+        # Добавляем последнюю строку если есть остаток
+        if row:
+            keyboard.append(row)
+        
+        # Добавляем кнопку для ввода другой даты
+        keyboard.append(['📅 Ввести другую дату'])
+        
+        return ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+    
+    def _get_day_name(self, weekday):
+        """Возвращает русское название дня недели"""
+        days = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
+        return days[weekday]
+    
+    def _is_valid_date(self, date_str):
+        """Проверяет, корректна ли дата и не в прошлом"""
+        try:
+            # Парсим дату
+            date_obj = datetime.strptime(date_str, '%d.%m.%Y')
+            
+            # Проверяем, что дата не в прошлом
+            today = datetime.now().replace(hour=0, minute=0, second=0, microsecond=0)
+            if date_obj < today:
+                return False
+            
+            # Проверяем, что дата не дальше чем через 30 дней
+            max_date = today + timedelta(days=30)
+            if date_obj > max_date:
+                return False
+            
+            return True
+            
+        except ValueError:
+            return False
+    
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /start"""
         # Получаем имя пользователя из профиля Telegram
@@ -31,16 +90,16 @@ class BookingHandlers:
         # Если есть имя, используем его, иначе просим представиться
         if full_name:
             welcome_text = f"""
-            👋 Привет, {first_name}! Я бот для записи на маникюр!
-            
-            Выберите действие из меню ниже ⬇️
-            """
+👋 Привет, {first_name}! Я бот для записи на маникюр!
+
+Выберите действие из меню ниже ⬇️
+"""
         else:
             welcome_text = """
-            👋 Привет! Я бот для записи на маникюр!
-            
-            Выберите действие из меню ниже ⬇️
-            """
+👋 Привет! Я бот для записи на маникюр!
+
+Выберите действие из меню ниже ⬇️
+"""
         
         await update.message.reply_text(
             welcome_text,
@@ -252,12 +311,17 @@ class BookingHandlers:
                 formatted_phone = phone
             
             name = context.user_data.get('name', '')
+            
+            # Показываем доступные даты
+            tomorrow = (datetime.now() + timedelta(days=1)).strftime('%d.%m.%Y')
+            day_after_tomorrow = (datetime.now() + timedelta(days=2)).strftime('%d.%m.%Y')
+            
             await update.message.reply_text(
                 f"✅ Отлично, {name}!\n"
                 f"Ваш номер: {formatted_phone}\n\n"
-                "📅 Теперь выберите дату визита:\n"
-                "Введите дату в формате ДД.ММ.ГГГГ\n"
-                f"Например: {datetime.now().strftime('%d.%m.%Y')}"
+                f"📅 Теперь выберите дату визита:\n"
+                f"Доступные даты на ближайшие 5 дней:",
+                reply_markup=self._get_date_keyboard()
             )
             return DATE
         else:
@@ -269,24 +333,100 @@ class BookingHandlers:
             return PHONE
     
     async def get_date(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Получаем дату"""
-        context.user_data['date'] = update.message.text
+        """Получаем дату через кнопки или текстом"""
+        user_input = update.message.text
         
-        # Предлагаем выбрать время
-        keyboard = [
-            ['10:00', '11:00', '12:00'],
-            ['13:00', '14:00', '15:00'],
-            ['16:00', '17:00', '18:00'],
-            ['19:00', '20:00', '21:00']
-        ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        # Если пользователь выбрал "Ввести другую дату"
+        if user_input == '📅 Ввести другую дату':
+            await update.message.reply_text(
+                "📝 Введите дату вручную в формате ДД.ММ.ГГГГ\n"
+                "Например: 25.12.2024\n\n"
+                "⚠️ Дата должна быть не ранее завтрашнего дня\n"
+                "и не позднее чем через 30 дней.",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            return DATE
         
-        name = context.user_data.get('name', '')
-        await update.message.reply_text(
-            f"⏰ {name}, выберите удобное время:",
-            reply_markup=reply_markup
-        )
-        return TIME
+        # Проверяем, является ли ввод датой с кнопки (формат: ДД.ММ.ГГГГ (День))
+        date_match = re.search(r'(\d{2}\.\d{2}\.\d{4})', user_input)
+        
+        if date_match:
+            # Извлекаем чистую дату из строки с кнопки
+            date_str = date_match.group(1)
+            
+            # Проверяем валидность даты
+            if self._is_valid_date(date_str):
+                context.user_data['date'] = date_str
+                
+                # Предлагаем выбрать время
+                keyboard = [
+                    ['10:00', '11:00', '12:00'],
+                    ['13:00', '14:00', '15:00'],
+                    ['16:00', '17:00', '18:00'],
+                    ['19:00', '20:00', '21:00']
+                ]
+                reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+                
+                name = context.user_data.get('name', '')
+                await update.message.reply_text(
+                    f"⏰ {name}, выберите удобное время:",
+                    reply_markup=reply_markup
+                )
+                return TIME
+            else:
+                await update.message.reply_text(
+                    "❌ Выбрана некорректная дата.\n"
+                    "Дата должна быть не ранее завтрашнего дня.\n\n"
+                    "Пожалуйста, выберите дату из списка:",
+                    reply_markup=self._get_date_keyboard()
+                )
+                return DATE
+        else:
+            # Пользователь ввел дату вручную
+            date_str = user_input.strip()
+            
+            # Проверяем формат даты
+            try:
+                datetime.strptime(date_str, '%d.%m.%Y')
+                
+                # Проверяем валидность даты
+                if self._is_valid_date(date_str):
+                    context.user_data['date'] = date_str
+                    
+                    # Предлагаем выбрать время
+                    keyboard = [
+                        ['10:00', '11:00', '12:00'],
+                        ['13:00', '14:00', '15:00'],
+                        ['16:00', '17:00', '18:00'],
+                        ['19:00', '20:00', '21:00']
+                    ]
+                    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+                    
+                    name = context.user_data.get('name', '')
+                    await update.message.reply_text(
+                        f"⏰ {name}, выберите удобное время:",
+                        reply_markup=reply_markup
+                    )
+                    return TIME
+                else:
+                    await update.message.reply_text(
+                        "❌ Некорректная дата!\n"
+                        "Дата должна быть:\n"
+                        "✅ Не ранее завтрашнего дня\n"
+                        "✅ Не позднее чем через 30 дней\n\n"
+                        "Пожалуйста, введите дату в формате ДД.ММ.ГГГГ:"
+                    )
+                    return DATE
+                    
+            except ValueError:
+                await update.message.reply_text(
+                    "❌ Неверный формат даты!\n"
+                    "Пожалуйста, введите дату в формате ДД.ММ.ГГГГ\n"
+                    "Например: 25.12.2024\n\n"
+                    "Или выберите из предложенных вариантов:",
+                    reply_markup=self._get_date_keyboard()
+                )
+                return DATE
     
     async def get_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Получаем время"""
@@ -320,17 +460,25 @@ class BookingHandlers:
         time = context.user_data.get('time', '')
         service = context.user_data.get('service', '')
         
+        # Получаем день недели для красивого отображения
+        try:
+            date_obj = datetime.strptime(date, '%d.%m.%Y')
+            day_name = self._get_day_name(date_obj.weekday())
+            date_display = f"{date} ({day_name})"
+        except:
+            date_display = date
+        
         booking_info = f"""
-        📋 {name}, проверьте вашу запись:
-        
-        👤 Имя: {name}
-        📱 Телефон: {phone}
-        📅 Дата: {date}
-        ⏰ Время: {time}
-        💅 Услуга: {service}
-        
-        Всё верно?
-        """
+📋 {name}, проверьте вашу запись:
+
+👤 Имя: {name}
+📱 Телефон: {phone}
+📅 Дата: {date_display}
+⏰ Время: {time}
+💅 Услуга: {service}
+
+Всё верно?
+"""
         
         keyboard = [['✅ Да, всё верно', '❌ Нет, исправить']]
         reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
