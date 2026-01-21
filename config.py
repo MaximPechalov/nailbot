@@ -25,5 +25,7 @@ COLUMNS = {
     'time': 'Время',
     'service': 'Услуга',
     'telegram_id': 'Telegram ID',
-    'username': 'Username'
+    'username': 'Username',
+    'status': 'Статус',
+    'status_updated': 'Время изменения статуса'
 }

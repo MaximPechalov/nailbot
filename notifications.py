@@ -1,34 +1,103 @@
-from telegram import Bot
+from telegram import InlineKeyboardButton, InlineKeyboardMarkup, Bot
+from datetime import datetime
 from config import MASTER_CHAT_ID, TELEGRAM_BOT_TOKEN
+import json
+import os
 
 class NotificationManager:
     def __init__(self):
         self.bot = Bot(token=TELEGRAM_BOT_TOKEN)
+        self.storage_file = 'bookings_storage.json'
     
     async def notify_master(self, booking_data: dict, user):
-        """Отправляет уведомление мастеру о новой записи"""
+        """Отправляет уведомление мастеру с кнопками"""
         message = f"""
         📢 НОВАЯ ЗАПИСЬ!
-        
+
         👤 Клиент: {booking_data['name']}
         📱 Телефон: {booking_data['phone']}
         📅 Дата: {booking_data['date']}
         ⏰ Время: {booking_data['time']}
         💅 Услуга: {booking_data['service']}
-        
-        Telegram: @{user.username if user.username else 'нет'}
-        ID: {user.id}
+
+        👤 Telegram: @{user.username if user.username else 'не указан'}
+        📊 ID: {user.id}
         
         ⏱️ Запись создана: {booking_data['timestamp']}
         """
         
+        # Создаем уникальный ID для записи
+        booking_id = f"booking_{user.id}_{int(datetime.now().timestamp())}"
+        
+        # Создаем кнопки
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Подтвердить", 
+                                   callback_data=f"confirm_{booking_id}"),
+                InlineKeyboardButton("❌ Отклонить", 
+                                   callback_data=f"reject_{booking_id}")
+            ]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
         try:
+            # Сохраняем данные во временный файл
+            booking_data['booking_id'] = booking_id
+            booking_data['user_id'] = user.id
+            
+            # Загружаем существующие записи
+            if os.path.exists(self.storage_file):
+                with open(self.storage_file, 'r', encoding='utf-8') as f:
+                    all_bookings = json.load(f)
+            else:
+                all_bookings = {}
+            
+            # Добавляем новую запись
+            all_bookings[booking_id] = booking_data
+            
+            # Сохраняем обратно
+            with open(self.storage_file, 'w', encoding='utf-8') as f:
+                json.dump(all_bookings, f, ensure_ascii=False, indent=2)
+            
+            # Отправляем сообщение
             await self.bot.send_message(
                 chat_id=MASTER_CHAT_ID,
-                text=message
+                text=message,
+                reply_markup=reply_markup
             )
+            
             print(f"✅ Уведомление отправлено мастеру (Chat ID: {MASTER_CHAT_ID})")
+            print(f"📝 Запись сохранена: {booking_id}")
             return True
+            
         except Exception as e:
             print(f"❌ Ошибка при отправке уведомления: {e}")
             return False
+    
+    def get_booking(self, booking_id):
+        """Получает данные записи по ID"""
+        if not os.path.exists(self.storage_file):
+            return None
+        
+        with open(self.storage_file, 'r', encoding='utf-8') as f:
+            all_bookings = json.load(f)
+        
+        return all_bookings.get(booking_id)
+    
+    def remove_booking(self, booking_id):
+        """Удаляет запись из хранилища"""
+        if not os.path.exists(self.storage_file):
+            return False
+        
+        with open(self.storage_file, 'r', encoding='utf-8') as f:
+            all_bookings = json.load(f)
+        
+        if booking_id in all_bookings:
+            del all_bookings[booking_id]
+            
+            with open(self.storage_file, 'w', encoding='utf-8') as f:
+                json.dump(all_bookings, f, ensure_ascii=False, indent=2)
+            
+            return True
+        
+        return False
