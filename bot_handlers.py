@@ -6,7 +6,7 @@ import json
 import os
 
 # Определяем состояния для ConversationHandler
-NAME, PHONE, DATE, TIME, SERVICE, CONFIRM = range(6)
+NAME, PHONE, DATE, TIME, SERVICE, CONFIRM, CANCEL_SELECT, CANCEL_CONFIRM = range(8)
 
 class BookingHandlers:
     def __init__(self, google_sheets, notification_manager):
@@ -149,13 +149,11 @@ class BookingHandlers:
     
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /start"""
-        # Получаем имя пользователя из профиля Telegram
         user = update.effective_user
         first_name = user.first_name or ""
         last_name = user.last_name or ""
         full_name = f"{first_name} {last_name}".strip()
         
-        # Если есть имя, используем его, иначе просим представиться
         if full_name:
             welcome_text = f"""
 👋 Привет, {first_name}! Я бот для записи на маникюр!
@@ -219,7 +217,7 @@ class BookingHandlers:
         return ConversationHandler.END
     
     async def view_bookings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Показывает записи пользователя"""
+        """Показывает записи пользователя с кнопками отмены"""
         user_id = update.effective_user.id
         
         try:
@@ -233,40 +231,56 @@ class BookingHandlers:
                 
                 if len(record) >= 7:  # Проверяем наличие колонки Telegram ID
                     record_user_id = record[6] if record[6] else ''
-                    if record_user_id == str(user_id):
+                    record_status = record[8] if len(record) > 8 else 'ожидает'
+                    
+                    # Показываем только активные записи (ожидает, подтверждено)
+                    if record_user_id == str(user_id) and record_status in ['ожидает', 'подтверждено']:
                         user_bookings.append({
+                            'row_index': i,  # Сохраняем индекс строки
                             'date': record[3] if len(record) > 3 else '',
                             'time': record[4] if len(record) > 4 else '',
                             'service': record[5] if len(record) > 5 else '',
-                            'status': record[8] if len(record) > 8 else 'ожидает'
+                            'status': record_status
                         })
             
             if user_bookings:
-                message = "📅 Ваши записи:\n\n"
+                # Сохраняем записи в контексте для отмены
+                context.user_data['my_bookings'] = user_bookings
+                
+                message = "📅 Ваши активные записи:\n\n"
+                keyboard = []
+                
                 for i, booking in enumerate(user_bookings, 1):
                     status_emoji = {
                         'ожидает': '⏳',
-                        'подтверждено': '✅',
-                        'отклонено': '❌',
-                        'отклонено мастером': '🚫',
-                        'выполнено': '✨',
-                        'отменено': '⏸️'
+                        'подтверждено': '✅'
                     }.get(booking['status'], '📌')
                     
+                    # Форматируем запись
                     message += f"{i}. {status_emoji} {booking['date']} в {booking['time']}\n"
                     message += f"   Услуга: {booking['service']}\n"
                     message += f"   Статус: {booking['status']}\n\n"
+                    
+                    # Добавляем кнопки для каждой записи
+                    btn_text = f"❌ Отменить запись {i}"
+                    keyboard.append([btn_text])
                 
-                await update.message.reply_text(
-                    message,
-                    reply_markup=self._get_main_menu()
-                )
+                # Добавляем кнопку возврата
+                keyboard.append(['🔙 Назад в меню'])
+                
+                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+                
+                message += "Выберите запись для отмены или вернитесь в меню:"
+                await update.message.reply_text(message, reply_markup=reply_markup)
+                
+                return CANCEL_SELECT
             else:
                 await update.message.reply_text(
-                    "📭 У вас пока нет записей.\n"
+                    "📭 У вас пока нет активных записей.\n"
                     "Вы можете записаться через меню '📝 Записаться на маникюр'",
                     reply_markup=self._get_main_menu()
                 )
+                return ConversationHandler.END
             
         except Exception as e:
             print(f"❌ Ошибка при получении записей: {e}")
@@ -274,8 +288,170 @@ class BookingHandlers:
                 "⚠️ Не удалось получить список записей. Попробуйте позже.",
                 reply_markup=self._get_main_menu()
             )
+            return ConversationHandler.END
+    
+    async def select_booking_to_cancel(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обрабатывает выбор записи для отмены"""
+        user_input = update.message.text
+        
+        if user_input == '🔙 Назад в меню':
+            await update.message.reply_text(
+                "Возвращаюсь в главное меню...",
+                reply_markup=self._get_main_menu()
+            )
+            return ConversationHandler.END
+        
+        # Проверяем, выбрана ли запись для отмены
+        if '❌ Отменить запись' in user_input:
+            # Извлекаем номер записи из текста кнопки
+            try:
+                booking_number = int(user_input.split(' ')[-1])
+                user_bookings = context.user_data.get('my_bookings', [])
+                
+                if 1 <= booking_number <= len(user_bookings):
+                    selected_booking = user_bookings[booking_number - 1]
+                    
+                    # Сохраняем выбранную запись для подтверждения
+                    context.user_data['booking_to_cancel'] = selected_booking
+                    context.user_data['booking_number'] = booking_number
+                    
+                    # Формируем сообщение для подтверждения
+                    message = f"""
+⚠️ Вы действительно хотите отменить запись?
+
+📅 Дата: {selected_booking['date']}
+⏰ Время: {selected_booking['time']}
+💅 Услуга: {selected_booking['service']}
+📊 Статус: {selected_booking['status']}
+
+⚠️ Отмена записи:
+• Запись будет помечена как отмененная
+• Время станет доступно для других клиентов
+• Мастер получит уведомление об отмене
+"""
+                    
+                    keyboard = [
+                        ['✅ Да, отменить запись'],
+                        ['❌ Нет, оставить запись']
+                    ]
+                    reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
+                    
+                    await update.message.reply_text(message, reply_markup=reply_markup)
+                    return CANCEL_CONFIRM
+                    
+            except (ValueError, IndexError) as e:
+                print(f"❌ Ошибка обработки выбора записи: {e}")
+        
+        await update.message.reply_text(
+            "Пожалуйста, выберите запись из списка ниже:",
+            reply_markup=self._get_main_menu()
+        )
+        return ConversationHandler.END
+    
+    async def confirm_cancel_booking(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Подтверждение отмены записи"""
+        if 'Да' in update.message.text:
+            booking_to_cancel = context.user_data.get('booking_to_cancel')
+            booking_number = context.user_data.get('booking_number')
+            
+            if booking_to_cancel:
+                try:
+                    # Получаем все записи
+                    all_bookings = self.google_sheets.get_all_bookings()
+                    
+                    # Находим полную запись по данным
+                    row_index = booking_to_cancel['row_index']
+                    
+                    if row_index < len(all_bookings):
+                        record = all_bookings[row_index]
+                        
+                        # Создаем данные для обновления статуса
+                        booking_data = {
+                            'name': record[1] if len(record) > 1 else '',
+                            'date': record[3] if len(record) > 3 else '',
+                            'time': record[4] if len(record) > 4 else '',
+                            'service': record[5] if len(record) > 5 else '',
+                            'phone': record[2] if len(record) > 2 else ''
+                        }
+                        
+                        # Обновляем статус в Google Sheets
+                        success = self.google_sheets.add_status(booking_data, 'отменено')
+                        
+                        if success:
+                            # Уведомляем мастера об отмене
+                            await self._notify_master_about_cancellation(
+                                update, 
+                                booking_to_cancel,
+                                update.effective_user
+                            )
+                            
+                            message = f"""
+✅ Запись #{booking_number} успешно отменена!
+
+📅 Дата: {booking_to_cancel['date']}
+⏰ Время: {booking_to_cancel['time']}
+💅 Услуга: {booking_to_cancel['service']}
+
+Вы можете записаться на другое время через главное меню.
+"""
+                        else:
+                            message = "⚠️ Не удалось отменить запись. Попробуйте позже или свяжитесь с мастером."
+                        
+                    else:
+                        message = "❌ Запись не найдена. Возможно, она уже была отменена."
+                        
+                except Exception as e:
+                    print(f"❌ Ошибка отмены записи: {e}")
+                    message = "⚠️ Произошла ошибка при отмене записи. Попробуйте позже."
+            else:
+                message = "❌ Данные записи не найдены."
+        else:
+            message = "Отмена записи отменена. Возвращаюсь в главное меню."
+        
+        await update.message.reply_text(
+            message,
+            reply_markup=self._get_main_menu()
+        )
+        
+        # Очищаем временные данные
+        if 'my_bookings' in context.user_data:
+            del context.user_data['my_bookings']
+        if 'booking_to_cancel' in context.user_data:
+            del context.user_data['booking_to_cancel']
+        if 'booking_number' in context.user_data:
+            del context.user_data['booking_number']
         
         return ConversationHandler.END
+    
+    async def _notify_master_about_cancellation(self, update: Update, booking_data: dict, user):
+        """Отправляет уведомление мастеру об отмене записи"""
+        try:
+            from config import MASTER_CHAT_ID
+            
+            message = f"""
+🔔 ОТМЕНА ЗАПИСИ
+
+👤 Клиент: {user.first_name or 'Неизвестный'}
+📱 Telegram: @{user.username if user.username else 'не указан'}
+
+📅 Была отменена запись:
+Дата: {booking_data['date']}
+Время: {booking_data['time']}
+Услуга: {booking_data['service']}
+Статус: {booking_data['status']}
+
+⏱️ Отменено в: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
+            
+            await self.notification_manager.bot.send_message(
+                chat_id=MASTER_CHAT_ID,
+                text=message
+            )
+            
+            print(f"✅ Мастер уведомлен об отмене записи")
+            
+        except Exception as e:
+            print(f"❌ Ошибка уведомления мастера об отмене: {e}")
     
     async def book(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начинает процесс записи"""

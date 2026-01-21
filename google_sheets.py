@@ -256,6 +256,30 @@ class GoogleSheets:
             print(f"❌ Ошибка при обновлении статуса в Google Sheets: {e}")
             return False
     
+    def update_booking_status_by_index(self, row_index, status):
+        """Обновляет статус записи по индексу строки"""
+        try:
+            # Обновляем статус и время изменения
+            update_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            # Обновляем ячейки (колонки считаются с 1)
+            self.sheet.update_cell(row_index + 1, 9, status)  # Статус в колонке I (9)
+            self.sheet.update_cell(row_index + 1, 10, update_time)  # Время в колонке J (10)
+            
+            # Применяем цвет в зависимости от статуса
+            color = self._get_status_color(status.lower())
+            row_range = f"A{row_index + 1}:J{row_index + 1}"
+            self.sheet.format(row_range, {
+                "backgroundColor": color
+            })
+            
+            print(f"✅ Статус обновлен в строке {row_index + 1}: {status}")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Ошибка при обновлении статуса по индексу: {e}")
+            return False
+    
     def get_all_bookings(self):
         """Получает все записи из таблицы"""
         try:

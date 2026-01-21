@@ -93,6 +93,35 @@ class SimpleCSVManager:
             print(f"❌ Ошибка при обновлении статуса в CSV: {e}")
             return False
     
+    def update_booking_status_by_index(self, row_index, status):
+        """Обновляет статус записи по индексу строки"""
+        try:
+            rows = []
+            with open(self.filename, 'r', newline='', encoding='utf-8') as file:
+                reader = csv.reader(file)
+                rows = list(reader)
+            
+            if 1 <= row_index < len(rows):  # Пропускаем заголовки
+                # Обновляем статус
+                if len(rows[row_index]) >= 9:
+                    rows[row_index][8] = status  # Статус
+                if len(rows[row_index]) >= 10:
+                    rows[row_index][9] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')  # Время обновления
+                
+                # Записываем обновленные данные
+                with open(self.filename, 'w', newline='', encoding='utf-8') as file:
+                    writer = csv.writer(file)
+                    writer.writerows(rows)
+                
+                print(f"✅ Статус обновлен в строке {row_index}: {status}")
+                return True
+            
+            return False
+            
+        except Exception as e:
+            print(f"❌ Ошибка при обновлении статуса по индексу в CSV: {e}")
+            return False
+    
     def get_all_bookings(self):
         """Получает все записи из CSV"""
         try:

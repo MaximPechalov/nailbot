@@ -18,7 +18,6 @@ async def handle_master_callback(update: Update, context):
     
     action, booking_id = data.split('_', 1)
     
-    # Загружаем данные из файла
     storage_file = 'bookings_storage.json'
     if not os.path.exists(storage_file):
         await query.edit_message_text("❌ Данные не найдены")
@@ -37,7 +36,6 @@ async def handle_master_callback(update: Update, context):
     user_name = booking_data.get('name', 'клиент')
     
     if action == 'confirm':
-        # Подтверждение записи
         status = 'подтверждено'
         await query.edit_message_text(
             f"✅ Запись подтверждена!\n\n"
@@ -50,7 +48,6 @@ async def handle_master_callback(update: Update, context):
             reply_markup=None
         )
         
-        # Отправляем уведомление клиенту
         try:
             await context.bot.send_message(
                 chat_id=user_id,
@@ -66,7 +63,6 @@ async def handle_master_callback(update: Update, context):
             print(f"⚠️ Не удалось отправить уведомление клиенту: {e}")
         
     elif action == 'reject':
-        # Отклонение записи мастером
         status = 'отклонено мастером'
         await query.edit_message_text(
             f"❌ Запись отклонена мастером\n\n"
@@ -79,7 +75,6 @@ async def handle_master_callback(update: Update, context):
             reply_markup=None
         )
         
-        # Отправляем уведомление клиенту
         try:
             await context.bot.send_message(
                 chat_id=user_id,
@@ -126,7 +121,7 @@ def main():
         google_sheets = SimpleCSVManager()
     
     from notifications import NotificationManager
-    from bot_handlers import BookingHandlers, NAME, PHONE, DATE, TIME, SERVICE, CONFIRM
+    from bot_handlers import BookingHandlers, NAME, PHONE, DATE, TIME, SERVICE, CONFIRM, CANCEL_SELECT, CANCEL_CONFIRM
     
     notification_manager = NotificationManager()
     booking_handlers = BookingHandlers(google_sheets, notification_manager)
@@ -134,11 +129,12 @@ def main():
     # Создаем приложение
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
-    # Создаем ConversationHandler для записи
+    # Создаем ОБЩИЙ ConversationHandler для всех состояний
     conv_handler = ConversationHandler(
         entry_points=[
             CommandHandler('book', booking_handlers.book),
-            MessageHandler(filters.Regex('^(📝 Записаться на маникюр)$'), booking_handlers.book)
+            MessageHandler(filters.Regex('^(📝 Записаться на маникюр|📅 Мои записи)$'), 
+                          lambda update, context: booking_handlers.handle_main_menu(update, context))
         ],
         states={
             NAME: [
@@ -155,6 +151,12 @@ def main():
             SERVICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, booking_handlers.get_service)],
             CONFIRM: [MessageHandler(filters.Regex('^(✅ Да, всё верно|❌ Нет, исправить)$'), 
                                     booking_handlers.confirm_booking)],
+            CANCEL_SELECT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, booking_handlers.select_booking_to_cancel)
+            ],
+            CANCEL_CONFIRM: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, booking_handlers.confirm_cancel_booking)
+            ],
         },
         fallbacks=[
             CommandHandler('cancel', booking_handlers.cancel),
@@ -162,23 +164,26 @@ def main():
         ]
     )
     
-    # Добавляем обработчики
-    application.add_handler(CommandHandler("start", booking_handlers.start))
-    application.add_handler(conv_handler)
-    
-    # Добавляем обработчик callback-кнопок мастера
+    # Добавляем обработчики в правильном порядке
+    # 1. Обработчик callback-кнопок мастера (должен быть первым!)
     application.add_handler(CallbackQueryHandler(
         handle_master_callback,
         pattern="^(confirm|reject)_"
     ))
     
-    # Обработчик главного меню (сообщения без команд)
+    # 2. ConversationHandler для всех состояний
+    application.add_handler(conv_handler)
+    
+    # 3. Обработчик команды /start
+    application.add_handler(CommandHandler("start", booking_handlers.start))
+    
+    # 4. Обработчик главного меню (должен быть ПОСЛЕ ConversationHandler!)
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND, 
         booking_handlers.handle_main_menu
     ))
     
-    # Обработчик неизвестных команд
+    # 5. Обработчик неизвестных команд
     application.add_handler(MessageHandler(
         filters.COMMAND, 
         booking_handlers.handle_unknown
