@@ -38,7 +38,7 @@ class NotificationManager:
             # Создаем уникальный ID для записи
             booking_id = f"booking_{user.id}_{int(datetime.now().timestamp())}"
             
-            # Создаем кнопки
+            # Создаем кнопки для мастера
             keyboard = [
                 [
                     InlineKeyboardButton("✅ Подтвердить", 
@@ -52,6 +52,7 @@ class NotificationManager:
             # Сохраняем данные
             booking_data['booking_id'] = booking_id
             booking_data['user_id'] = user.id
+            booking_data['status'] = 'ожидает'  # Начальный статус
             
             # Загружаем и обновляем хранилище
             with open(self.storage_file, 'r', encoding='utf-8') as f:
@@ -74,12 +75,39 @@ class NotificationManager:
             
         except Exception as e:
             print(f"❌ Ошибка при отправке уведомления: {e}")
-            # Временное решение: сохраняем в лог
             try:
                 with open('error_log.txt', 'a', encoding='utf-8') as f:
                     f.write(f"{datetime.now()}: {str(e)}\n")
             except:
                 pass
+            return False
+    
+    async def send_master_menu(self):
+        """Отправляет меню мастера с кнопками"""
+        try:
+            keyboard = [
+                [
+                    InlineKeyboardButton("📋 Активные записи", callback_data="master_active"),
+                    InlineKeyboardButton("✅ Выполненные", callback_data="master_completed")
+                ],
+                [
+                    InlineKeyboardButton("⏳ Ожидают подтверждения", callback_data="master_pending"),
+                    InlineKeyboardButton("📊 Статистика", callback_data="master_stats")
+                ]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            await self.bot.send_message(
+                chat_id=MASTER_CHAT_ID,
+                text="🎛️ Панель управления мастера\nВыберите действие:",
+                reply_markup=reply_markup
+            )
+            
+            print(f"✅ Меню мастера отправлено")
+            return True
+            
+        except Exception as e:
+            print(f"❌ Ошибка отправки меню мастера: {e}")
             return False
     
     def get_booking(self, booking_id):
@@ -91,6 +119,35 @@ class NotificationManager:
             all_bookings = json.load(f)
         
         return all_bookings.get(booking_id)
+    
+    def get_bookings_by_status(self, status):
+        """Получает все записи по статусу"""
+        if not os.path.exists(self.storage_file):
+            return {}
+        
+        with open(self.storage_file, 'r', encoding='utf-8') as f:
+            all_bookings = json.load(f)
+        
+        return {k: v for k, v in all_bookings.items() if v.get('status') == status}
+    
+    def update_booking_status(self, booking_id, status):
+        """Обновляет статус записи"""
+        if not os.path.exists(self.storage_file):
+            return False
+        
+        with open(self.storage_file, 'r', encoding='utf-8') as f:
+            all_bookings = json.load(f)
+        
+        if booking_id in all_bookings:
+            all_bookings[booking_id]['status'] = status
+            all_bookings[booking_id]['status_updated'] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            
+            with open(self.storage_file, 'w', encoding='utf-8') as f:
+                json.dump(all_bookings, f, ensure_ascii=False, indent=2)
+            
+            return True
+        
+        return False
     
     def remove_booking(self, booking_id):
         """Удаляет запись из хранилища"""
@@ -109,3 +166,42 @@ class NotificationManager:
             return True
         
         return False
+    
+    def get_all_bookings(self):
+        """Получает все записи"""
+        if not os.path.exists(self.storage_file):
+            return {}
+        
+        with open(self.storage_file, 'r', encoding='utf-8') as f:
+            all_bookings = json.load(f)
+        
+        return all_bookings
+    
+    def get_statistics(self):
+        """Возвращает статистику записей"""
+        if not os.path.exists(self.storage_file):
+            return {}
+        
+        with open(self.storage_file, 'r', encoding='utf-8') as f:
+            all_bookings = json.load(f)
+        
+        total = len(all_bookings)
+        pending = len([b for b in all_bookings.values() if b.get('status') == 'ожидает'])
+        confirmed = len([b for b in all_bookings.values() if b.get('status') == 'подтверждено'])
+        completed = len([b for b in all_bookings.values() if b.get('status') == 'выполнено'])
+        rejected = len([b for b in all_bookings.values() if b.get('status') == 'отклонено мастером'])
+        cancelled = len([b for b in all_bookings.values() if b.get('status') == 'отменено'])
+        
+        today = datetime.now().strftime('%Y-%m-%d')
+        today_bookings = len([b for b in all_bookings.values() 
+                             if b.get('date') == today])
+        
+        return {
+            'total': total,
+            'pending': pending,
+            'confirmed': confirmed,
+            'completed': completed,
+            'rejected': rejected,
+            'cancelled': cancelled,
+            'today': today_bookings
+        }

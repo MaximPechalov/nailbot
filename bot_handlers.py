@@ -178,7 +178,6 @@ class BookingHandlers:
         text = update.message.text
         
         if text == '📝 Записаться на маникюр':
-            # Начинаем процесс записи
             return await self.book(update, context)
         elif text == '📅 Мои записи':
             return await self.view_bookings(update, context)
@@ -221,22 +220,20 @@ class BookingHandlers:
         user_id = update.effective_user.id
         
         try:
-            # Пытаемся получить записи из Google Sheets
             all_bookings = self.google_sheets.get_all_bookings()
-            
             user_bookings = []
+            
             for i, record in enumerate(all_bookings):
-                if i == 0:  # Пропускаем заголовки
+                if i == 0:
                     continue
                 
-                if len(record) >= 7:  # Проверяем наличие колонки Telegram ID
+                if len(record) >= 7:
                     record_user_id = record[6] if record[6] else ''
                     record_status = record[8] if len(record) > 8 else 'ожидает'
                     
-                    # Показываем только активные записи (ожидает, подтверждено)
                     if record_user_id == str(user_id) and record_status in ['ожидает', 'подтверждено']:
                         user_bookings.append({
-                            'row_index': i,  # Сохраняем индекс строки
+                            'row_index': i,
                             'date': record[3] if len(record) > 3 else '',
                             'time': record[4] if len(record) > 4 else '',
                             'service': record[5] if len(record) > 5 else '',
@@ -244,7 +241,6 @@ class BookingHandlers:
                         })
             
             if user_bookings:
-                # Сохраняем записи в контексте для отмены
                 context.user_data['my_bookings'] = user_bookings
                 
                 message = "📅 Ваши активные записи:\n\n"
@@ -256,16 +252,13 @@ class BookingHandlers:
                         'подтверждено': '✅'
                     }.get(booking['status'], '📌')
                     
-                    # Форматируем запись
                     message += f"{i}. {status_emoji} {booking['date']} в {booking['time']}\n"
                     message += f"   Услуга: {booking['service']}\n"
                     message += f"   Статус: {booking['status']}\n\n"
                     
-                    # Добавляем кнопки для каждой записи
                     btn_text = f"❌ Отменить запись {i}"
                     keyboard.append([btn_text])
                 
-                # Добавляем кнопку возврата
                 keyboard.append(['🔙 Назад в меню'])
                 
                 reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
@@ -301,9 +294,7 @@ class BookingHandlers:
             )
             return ConversationHandler.END
         
-        # Проверяем, выбрана ли запись для отмены
         if '❌ Отменить запись' in user_input:
-            # Извлекаем номер записи из текста кнопки
             try:
                 booking_number = int(user_input.split(' ')[-1])
                 user_bookings = context.user_data.get('my_bookings', [])
@@ -311,11 +302,9 @@ class BookingHandlers:
                 if 1 <= booking_number <= len(user_bookings):
                     selected_booking = user_bookings[booking_number - 1]
                     
-                    # Сохраняем выбранную запись для подтверждения
                     context.user_data['booking_to_cancel'] = selected_booking
                     context.user_data['booking_number'] = booking_number
                     
-                    # Формируем сообщение для подтверждения
                     message = f"""
 ⚠️ Вы действительно хотите отменить запись?
 
@@ -356,16 +345,12 @@ class BookingHandlers:
             
             if booking_to_cancel:
                 try:
-                    # Получаем все записи
                     all_bookings = self.google_sheets.get_all_bookings()
-                    
-                    # Находим полную запись по данным
                     row_index = booking_to_cancel['row_index']
                     
                     if row_index < len(all_bookings):
                         record = all_bookings[row_index]
                         
-                        # Создаем данные для обновления статуса
                         booking_data = {
                             'name': record[1] if len(record) > 1 else '',
                             'date': record[3] if len(record) > 3 else '',
@@ -374,11 +359,9 @@ class BookingHandlers:
                             'phone': record[2] if len(record) > 2 else ''
                         }
                         
-                        # Обновляем статус в Google Sheets
                         success = self.google_sheets.add_status(booking_data, 'отменено')
                         
                         if success:
-                            # Уведомляем мастера об отмене
                             await self._notify_master_about_cancellation(
                                 update, 
                                 booking_to_cancel,
@@ -413,7 +396,6 @@ class BookingHandlers:
             reply_markup=self._get_main_menu()
         )
         
-        # Очищаем временные данные
         if 'my_bookings' in context.user_data:
             del context.user_data['my_bookings']
         if 'booking_to_cancel' in context.user_data:
@@ -455,7 +437,6 @@ class BookingHandlers:
     
     async def book(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Начинает процесс записи"""
-        # Получаем имя пользователя из профиля Telegram
         user = update.effective_user
         first_name = user.first_name or ""
         
@@ -464,7 +445,6 @@ class BookingHandlers:
         else:
             greeting = "Давайте начнем запись!"
         
-        # Предлагаем использовать имя из профиля или ввести своё
         keyboard = [
             ['Использовать имя из профиля Telegram'],
             ['Ввести другое имя']
@@ -477,7 +457,6 @@ class BookingHandlers:
             reply_markup=reply_markup
         )
         
-        # Сохраняем имя из профиля для возможного использования
         if first_name:
             context.user_data['profile_name'] = first_name
         
@@ -496,7 +475,6 @@ class BookingHandlers:
                     reply_markup=ReplyKeyboardRemove()
                 )
             else:
-                # Если имени нет в профиле, просим ввести
                 await update.message.reply_text(
                     "😕 Не удалось получить имя из профиля.\n"
                     "Пожалуйста, введите ваше имя:",
@@ -510,15 +488,12 @@ class BookingHandlers:
             )
             return NAME
         else:
-            # Пользователь ввел имя напрямую
             context.user_data['name'] = update.message.text
         
-        # Проверяем, есть ли сохраненный телефон у пользователя
         user_id = update.effective_user.id
         saved_phone = self._get_user_phone(user_id)
         
         if saved_phone:
-            # Показываем сохраненный телефон и спрашиваем, нужно ли его изменить
             formatted_phone = self._format_phone(saved_phone)
             keyboard = [
                 [f'Использовать {formatted_phone}'],
@@ -534,7 +509,6 @@ class BookingHandlers:
                 reply_markup=reply_markup
             )
         else:
-            # Нет сохраненного телефона, просим ввести
             await update.message.reply_text(
                 "📱 Введите ваш номер телефона:\n"
                 "Например: +79123456789",
@@ -546,16 +520,12 @@ class BookingHandlers:
     async def get_name_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Получаем введенное имя"""
         context.user_data['name'] = update.message.text
-        
-        # Обращаемся по имени
         name = context.user_data['name']
         
-        # Проверяем, есть ли сохраненный телефон у пользователя
         user_id = update.effective_user.id
         saved_phone = self._get_user_phone(user_id)
         
         if saved_phone:
-            # Показываем сохраненный телефон и спрашиваем, нужно ли его изменить
             formatted_phone = self._format_phone(saved_phone)
             keyboard = [
                 [f'Использовать {formatted_phone}'],
@@ -570,7 +540,6 @@ class BookingHandlers:
                 reply_markup=reply_markup
             )
         else:
-            # Нет сохраненного телефона, просим ввести
             await update.message.reply_text(
                 f"✅ Отлично, {name}!\n\n"
                 "📱 Теперь введите ваш номер телефона:\n"
@@ -584,16 +553,13 @@ class BookingHandlers:
         """Получаем телефон и проверяем формат"""
         user_input = update.message.text
         
-        # Проверяем, выбрал ли пользователь "Использовать сохраненный номер"
         if user_input.startswith('Использовать'):
-            # Извлекаем телефон из текста кнопки
             phone_match = re.search(r'(\+?\d[\d\s\-\(\)]+)', user_input)
             if phone_match:
                 phone = phone_match.group(1)
                 if self._validate_phone(phone):
                     context.user_data['phone'] = phone
                     
-                    # Сохраняем телефон пользователя
                     user_id = update.effective_user.id
                     self._save_user_phone(user_id, phone)
                     
@@ -621,20 +587,15 @@ class BookingHandlers:
                 )
                 return PHONE
         
-        # Пользователь вводит телефон вручную
         phone = user_input
         
-        # Проверяем валидность телефона
         if self._validate_phone(phone):
             context.user_data['phone'] = phone
             
-            # Сохраняем телефон пользователя
             user_id = update.effective_user.id
             self._save_user_phone(user_id, phone)
             
-            # Форматируем номер для красивого отображения
             formatted_phone = self._format_phone(phone)
-            
             name = context.user_data.get('name', '')
             
             await update.message.reply_text(
@@ -661,7 +622,6 @@ class BookingHandlers:
         """Получаем дату через кнопки или текстом"""
         user_input = update.message.text
         
-        # Если пользователь выбрал "Ввести другую дату"
         if user_input == '📅 Ввести другую дату':
             await update.message.reply_text(
                 "📝 Введите дату вручную в формате ДД.ММ.ГГГГ\n"
@@ -672,18 +632,14 @@ class BookingHandlers:
             )
             return DATE
         
-        # Проверяем, является ли ввод датой с кнопки (формат: ДД.ММ.ГГГГ (День))
         date_match = re.search(r'(\d{2}\.\d{2}\.\d{4})', user_input)
         
         if date_match:
-            # Извлекаем чистую дату из строки с кнопки
             date_str = date_match.group(1)
             
-            # Проверяем валидность даты
             if self._is_valid_date(date_str):
                 context.user_data['date'] = date_str
                 
-                # Предлагаем выбрать время
                 keyboard = [
                     ['10:00', '11:00', '12:00'],
                     ['13:00', '14:00', '15:00'],
@@ -707,18 +663,14 @@ class BookingHandlers:
                 )
                 return DATE
         else:
-            # Пользователь ввел дату вручную
             date_str = user_input.strip()
             
-            # Проверяем формат даты
             try:
                 datetime.strptime(date_str, '%d.%m.%Y')
                 
-                # Проверяем валидность даты
                 if self._is_valid_date(date_str):
                     context.user_data['date'] = date_str
                     
-                    # Предлагаем выбрать время
                     keyboard = [
                         ['10:00', '11:00', '12:00'],
                         ['13:00', '14:00', '15:00'],
@@ -757,7 +709,6 @@ class BookingHandlers:
         """Получаем время"""
         context.user_data['time'] = update.message.text
         
-        # Предлагаем выбрать услугу
         keyboard = [
             ['💅 Классический маникюр - 1500₽'],
             ['✨ Маникюр + покрытие - 2500₽'],
@@ -778,17 +729,14 @@ class BookingHandlers:
         """Получаем услугу и показываем подтверждение"""
         context.user_data['service'] = update.message.text
         
-        # Формируем текст для подтверждения
         name = context.user_data.get('name', '')
         phone = context.user_data.get('phone', '')
         date = context.user_data.get('date', '')
         time = context.user_data.get('time', '')
         service = context.user_data.get('service', '')
         
-        # Форматируем телефон для красивого отображения
         formatted_phone = self._format_phone(phone)
         
-        # Получаем день недели для красивого отображения
         try:
             date_obj = datetime.strptime(date, '%d.%m.%Y')
             day_name = self._get_day_name(date_obj.weekday())
@@ -820,7 +768,6 @@ class BookingHandlers:
     async def confirm_booking(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Подтверждение и сохранение записи"""
         if 'Да' in update.message.text:
-            # Сохраняем запись
             booking_data = {
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 'name': context.user_data['name'],
@@ -832,13 +779,10 @@ class BookingHandlers:
                 'username': update.effective_user.username or ''
             }
             
-            # Добавляем в Google Sheets или CSV
             self.google_sheets.add_booking(booking_data)
             
-            # Отправляем уведомление мастеру
             await self.notification_manager.notify_master(booking_data, update.effective_user)
             
-            # Убеждаемся, что телефон сохранен
             user_id = update.effective_user.id
             self._save_user_phone(user_id, context.user_data['phone'])
             
@@ -853,13 +797,11 @@ class BookingHandlers:
                 reply_markup=self._get_main_menu()
             )
         else:
-            # Предлагаем начать заново
             await update.message.reply_text(
                 "Давайте начнем запись заново.",
                 reply_markup=self._get_main_menu()
             )
         
-        # Очищаем данные пользователя
         context.user_data.clear()
         return ConversationHandler.END
     

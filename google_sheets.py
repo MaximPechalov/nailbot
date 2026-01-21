@@ -203,7 +203,7 @@ class GoogleSheets:
             print(f"✅ Таблица отсортирована по дате и времени")
             
         except Exception as e:
-            print(f"❌ Ошибка при сортировке таблицы: {e}")
+            print(f"❌ Ошибка при сортировке таблица: {e}")
     
     def add_status(self, booking_data, status):
         """Обновляет статус записи в таблице"""
