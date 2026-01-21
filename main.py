@@ -38,6 +38,7 @@ async def handle_master_callback(update: Update, context):
     
     if action == 'confirm':
         # Подтверждение записи
+        status = 'подтверждено'
         await query.edit_message_text(
             f"✅ Запись подтверждена!\n\n"
             f"👤 Клиент: {booking_data['name']}\n"
@@ -64,20 +65,11 @@ async def handle_master_callback(update: Update, context):
         except Exception as e:
             print(f"⚠️ Не удалось отправить уведомление клиенту: {e}")
         
-        # Обновляем статус в CSV/Google Sheets
-        try:
-            from google_sheets import GoogleSheets
-            google_sheets = GoogleSheets()
-            google_sheets.add_status(booking_data, 'подтверждено')
-        except:
-            from simple_csv import SimpleCSVManager
-            csv_manager = SimpleCSVManager()
-            csv_manager.add_status(booking_data, 'подтверждено')
-        
     elif action == 'reject':
-        # Отклонение записи
+        # Отклонение записи мастером
+        status = 'отклонено мастером'
         await query.edit_message_text(
-            f"❌ Запись отклонена\n\n"
+            f"❌ Запись отклонена мастером\n\n"
             f"👤 Клиент: {booking_data['name']}\n"
             f"📱 Телефон: {booking_data['phone']}\n"
             f"📅 Дата: {booking_data['date']}\n"
@@ -101,16 +93,16 @@ async def handle_master_callback(update: Update, context):
             print(f"✅ Клиенту {user_id} отправлено уведомление об отклонении")
         except Exception as e:
             print(f"⚠️ Не удалось отправить уведомление клиенту: {e}")
-        
-        # Обновляем статус в CSV/Google Sheets
-        try:
-            from google_sheets import GoogleSheets
-            google_sheets = GoogleSheets()
-            google_sheets.add_status(booking_data, 'отклонено')
-        except:
-            from simple_csv import SimpleCSVManager
-            csv_manager = SimpleCSVManager()
-            csv_manager.add_status(booking_data, 'отклонено')
+    
+    # Обновляем статус в Google Sheets или CSV
+    try:
+        from google_sheets import GoogleSheets
+        google_sheets = GoogleSheets()
+        google_sheets.add_status(booking_data, status)
+    except:
+        from simple_csv import SimpleCSVManager
+        csv_manager = SimpleCSVManager()
+        csv_manager.add_status(booking_data, status)
     
     # Удаляем запись из хранилища
     if booking_id in all_bookings:
@@ -150,14 +142,16 @@ def main():
         ],
         states={
             NAME: [
-                MessageHandler(filters.Regex('^(Использовать имя из профиля Telegram|Ввести другое имя)$'), booking_handlers.get_name),
-                MessageHandler(filters.TEXT & ~filters.COMMAND, booking_handlers.get_name_input)
+                MessageHandler(filters.Regex('^(Использовать имя из профиля Telegram|Ввести другое имя)$'), 
+                              booking_handlers.get_name),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, booking_handlers.handle_name_text)
             ],
             PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, booking_handlers.get_phone)],
             DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, booking_handlers.get_date)],
             TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, booking_handlers.get_time)],
             SERVICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, booking_handlers.get_service)],
-            CONFIRM: [MessageHandler(filters.TEXT & ~filters.COMMAND, booking_handlers.confirm_booking)],
+            CONFIRM: [MessageHandler(filters.Regex('^(✅ Да, всё верно|❌ Нет, исправить)$'), 
+                                    booking_handlers.confirm_booking)],
         },
         fallbacks=[
             CommandHandler('cancel', booking_handlers.cancel),

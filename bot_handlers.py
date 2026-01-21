@@ -56,11 +56,7 @@ class BookingHandlers:
             # Начинаем процесс записи
             return await self.book(update, context)
         elif text == '📅 Мои записи':
-            await update.message.reply_text(
-                "📅 Функция просмотра записей в разработке...\n"
-                "Скоро вы сможете просматривать свои записи здесь!",
-                reply_markup=self._get_main_menu()
-            )
+            return await self.view_bookings(update, context)
         elif text == 'ℹ️ О нас':
             await update.message.reply_text(
                 "💅 Салон маникюра 'Лаковые нежности'\n\n"
@@ -90,6 +86,65 @@ class BookingHandlers:
         else:
             await update.message.reply_text(
                 "Пожалуйста, используйте меню ниже ⬇️",
+                reply_markup=self._get_main_menu()
+            )
+        
+        return ConversationHandler.END
+    
+    async def view_bookings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показывает записи пользователя"""
+        user_id = update.effective_user.id
+        
+        try:
+            # Пытаемся получить записи из Google Sheets
+            all_bookings = self.google_sheets.get_all_bookings()
+            
+            user_bookings = []
+            for i, record in enumerate(all_bookings):
+                if i == 0:  # Пропускаем заголовки
+                    continue
+                
+                if len(record) >= 7:  # Проверяем наличие колонки Telegram ID
+                    record_user_id = record[6] if record[6] else ''
+                    if record_user_id == str(user_id):
+                        user_bookings.append({
+                            'date': record[3] if len(record) > 3 else '',
+                            'time': record[4] if len(record) > 4 else '',
+                            'service': record[5] if len(record) > 5 else '',
+                            'status': record[8] if len(record) > 8 else 'ожидает'
+                        })
+            
+            if user_bookings:
+                message = "📅 Ваши записи:\n\n"
+                for i, booking in enumerate(user_bookings, 1):
+                    status_emoji = {
+                        'ожидает': '⏳',
+                        'подтверждено': '✅',
+                        'отклонено': '❌',
+                        'отклонено мастером': '🚫',
+                        'выполнено': '✨',
+                        'отменено': '⏸️'
+                    }.get(booking['status'], '📌')
+                    
+                    message += f"{i}. {status_emoji} {booking['date']} в {booking['time']}\n"
+                    message += f"   Услуга: {booking['service']}\n"
+                    message += f"   Статус: {booking['status']}\n\n"
+                
+                await update.message.reply_text(
+                    message,
+                    reply_markup=self._get_main_menu()
+                )
+            else:
+                await update.message.reply_text(
+                    "📭 У вас пока нет записей.\n"
+                    "Вы можете записаться через меню '📝 Записаться на маникюр'",
+                    reply_markup=self._get_main_menu()
+                )
+            
+        except Exception as e:
+            print(f"❌ Ошибка при получении записей: {e}")
+            await update.message.reply_text(
+                "⚠️ Не удалось получить список записей. Попробуйте позже.",
                 reply_markup=self._get_main_menu()
             )
         
@@ -344,3 +399,7 @@ class BookingHandlers:
             "Пожалуйста, используйте меню ниже ⬇️",
             reply_markup=self._get_main_menu()
         )
+    
+    async def handle_name_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обрабатывает введенное имя напрямую"""
+        return await self.get_name_input(update, context)

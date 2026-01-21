@@ -92,3 +92,15 @@ class SimpleCSVManager:
         except Exception as e:
             print(f"❌ Ошибка при обновлении статуса в CSV: {e}")
             return False
+    
+    def get_all_bookings(self):
+        """Получает все записи из CSV"""
+        try:
+            rows = []
+            with open(self.filename, 'r', newline='', encoding='utf-8') as file:
+                reader = csv.reader(file)
+                rows = list(reader)
+            return rows
+        except Exception as e:
+            print(f"❌ Ошибка получения записей из CSV: {e}")
+            return []
