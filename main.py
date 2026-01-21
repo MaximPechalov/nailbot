@@ -146,7 +146,10 @@ def main():
                               booking_handlers.get_name),
                 MessageHandler(filters.TEXT & ~filters.COMMAND, booking_handlers.handle_name_text)
             ],
-            PHONE: [MessageHandler(filters.TEXT & ~filters.COMMAND, booking_handlers.get_phone)],
+            PHONE: [
+                MessageHandler(filters.Regex(r'^Использовать .*'), booking_handlers.get_phone),
+                MessageHandler(filters.TEXT & ~filters.COMMAND, booking_handlers.get_phone)
+            ],
             DATE: [MessageHandler(filters.TEXT & ~filters.COMMAND, booking_handlers.get_date)],
             TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, booking_handlers.get_time)],
             SERVICE: [MessageHandler(filters.TEXT & ~filters.COMMAND, booking_handlers.get_service)],

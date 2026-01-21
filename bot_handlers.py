@@ -2,6 +2,8 @@ from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
 from telegram.ext import ContextTypes, ConversationHandler
 from datetime import datetime, timedelta
 import re
+import json
+import os
 
 # Определяем состояния для ConversationHandler
 NAME, PHONE, DATE, TIME, SERVICE, CONFIRM = range(6)
@@ -10,7 +12,49 @@ class BookingHandlers:
     def __init__(self, google_sheets, notification_manager):
         self.google_sheets = google_sheets
         self.notification_manager = notification_manager
-        
+        self.users_file = 'users_phones.json'
+        self._ensure_users_file()
+    
+    def _ensure_users_file(self):
+        """Создает файл для хранения телефонов пользователей если его нет"""
+        if not os.path.exists(self.users_file):
+            with open(self.users_file, 'w', encoding='utf-8') as f:
+                json.dump({}, f, ensure_ascii=False, indent=2)
+    
+    def _save_user_phone(self, user_id, phone):
+        """Сохраняет телефон пользователя"""
+        try:
+            with open(self.users_file, 'r', encoding='utf-8') as f:
+                users_data = json.load(f)
+            
+            users_data[str(user_id)] = {
+                'phone': phone,
+                'last_updated': datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+            }
+            
+            with open(self.users_file, 'w', encoding='utf-8') as f:
+                json.dump(users_data, f, ensure_ascii=False, indent=2)
+            
+            print(f"✅ Телефон сохранен для пользователя {user_id}")
+            return True
+        except Exception as e:
+            print(f"❌ Ошибка сохранения телефона: {e}")
+            return False
+    
+    def _get_user_phone(self, user_id):
+        """Получает сохраненный телефон пользователя"""
+        try:
+            with open(self.users_file, 'r', encoding='utf-8') as f:
+                users_data = json.load(f)
+            
+            user_data = users_data.get(str(user_id))
+            if user_data:
+                return user_data.get('phone')
+            return None
+        except Exception as e:
+            print(f"❌ Ошибка получения телефона: {e}")
+            return None
+    
     def _get_main_menu(self):
         """Создает главное меню"""
         keyboard = [
@@ -78,6 +122,30 @@ class BookingHandlers:
             
         except ValueError:
             return False
+    
+    def _format_phone(self, phone):
+        """Форматирует телефон для красивого отображения"""
+        phone_clean = phone.replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
+        
+        if phone_clean.startswith('+7') and len(phone_clean) == 12:
+            return f"+7 ({phone_clean[2:5]}) {phone_clean[5:8]}-{phone_clean[8:10]}-{phone_clean[10:12]}"
+        elif phone_clean.startswith('8') and len(phone_clean) == 11:
+            return f"8 ({phone_clean[1:4]}) {phone_clean[4:7]}-{phone_clean[7:9]}-{phone_clean[9:11]}"
+        elif phone_clean.startswith('7') and len(phone_clean) == 11:
+            return f"+7 ({phone_clean[1:4]}) {phone_clean[4:7]}-{phone_clean[7:9]}-{phone_clean[9:11]}"
+        else:
+            return phone
+    
+    def _validate_phone(self, phone):
+        """Проверяет валидность номера телефона"""
+        phone_clean = phone.replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
+        
+        # Проверяем российские форматы
+        if (phone_clean.startswith('+7') and len(phone_clean) == 12) or \
+           (phone_clean.startswith('8') and len(phone_clean) == 11) or \
+           (phone_clean.startswith('7') and len(phone_clean) == 11):
+            return True
+        return False
     
     async def start(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обработчик команды /start"""
@@ -269,11 +337,34 @@ class BookingHandlers:
             # Пользователь ввел имя напрямую
             context.user_data['name'] = update.message.text
         
-        # Переходим к следующему шагу - телефон
-        await update.message.reply_text(
-            "📱 Введите ваш номер телефона:\n"
-            "Например: +79123456789"
-        )
+        # Проверяем, есть ли сохраненный телефон у пользователя
+        user_id = update.effective_user.id
+        saved_phone = self._get_user_phone(user_id)
+        
+        if saved_phone:
+            # Показываем сохраненный телефон и спрашиваем, нужно ли его изменить
+            formatted_phone = self._format_phone(saved_phone)
+            keyboard = [
+                [f'Использовать {formatted_phone}'],
+                ['Ввести другой номер']
+            ]
+            reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+            
+            name = context.user_data.get('name', '')
+            await update.message.reply_text(
+                f"✅ Отлично, {name}!\n\n"
+                f"📱 У вас есть сохраненный номер: {formatted_phone}\n"
+                "Хотите использовать его или ввести новый?",
+                reply_markup=reply_markup
+            )
+        else:
+            # Нет сохраненного телефона, просим ввести
+            await update.message.reply_text(
+                "📱 Введите ваш номер телефона:\n"
+                "Например: +79123456789",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        
         return PHONE
     
     async def get_name_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -282,39 +373,93 @@ class BookingHandlers:
         
         # Обращаемся по имени
         name = context.user_data['name']
-        await update.message.reply_text(
-            f"✅ Отлично, {name}!\n\n"
-            "📱 Теперь введите ваш номер телефона:\n"
-            "Например: +79123456789"
-        )
+        
+        # Проверяем, есть ли сохраненный телефон у пользователя
+        user_id = update.effective_user.id
+        saved_phone = self._get_user_phone(user_id)
+        
+        if saved_phone:
+            # Показываем сохраненный телефон и спрашиваем, нужно ли его изменить
+            formatted_phone = self._format_phone(saved_phone)
+            keyboard = [
+                [f'Использовать {formatted_phone}'],
+                ['Ввести другой номер']
+            ]
+            reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+            
+            await update.message.reply_text(
+                f"✅ Отлично, {name}!\n\n"
+                f"📱 У вас есть сохраненный номер: {formatted_phone}\n"
+                "Хотите использовать его или ввести новый?",
+                reply_markup=reply_markup
+            )
+        else:
+            # Нет сохраненного телефона, просим ввести
+            await update.message.reply_text(
+                f"✅ Отлично, {name}!\n\n"
+                "📱 Теперь введите ваш номер телефона:\n"
+                "Например: +79123456789",
+                reply_markup=ReplyKeyboardRemove()
+            )
+        
         return PHONE
     
     async def get_phone(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Получаем телефон и проверяем формат"""
-        phone = update.message.text
+        user_input = update.message.text
         
-        # Простая проверка номера телефона
-        phone_clean = phone.replace(' ', '').replace('-', '').replace('(', '').replace(')', '')
+        # Проверяем, выбрал ли пользователь "Использовать сохраненный номер"
+        if user_input.startswith('Использовать'):
+            # Извлекаем телефон из текста кнопки
+            phone_match = re.search(r'(\+?\d[\d\s\-\(\)]+)', user_input)
+            if phone_match:
+                phone = phone_match.group(1)
+                if self._validate_phone(phone):
+                    context.user_data['phone'] = phone
+                    
+                    # Сохраняем телефон пользователя
+                    user_id = update.effective_user.id
+                    self._save_user_phone(user_id, phone)
+                    
+                    name = context.user_data.get('name', '')
+                    formatted_phone = self._format_phone(phone)
+                    
+                    await update.message.reply_text(
+                        f"✅ Отлично, {name}!\n"
+                        f"Ваш номер: {formatted_phone}\n\n"
+                        f"📅 Теперь выберите дату визита:\n"
+                        f"Доступные даты на ближайшие 5 дней:",
+                        reply_markup=self._get_date_keyboard()
+                    )
+                    return DATE
+                else:
+                    await update.message.reply_text(
+                        "❌ Неверный формат телефона в сохраненных данных.\n"
+                        "Пожалуйста, введите номер вручную:"
+                    )
+                    return PHONE
+            else:
+                await update.message.reply_text(
+                    "❌ Не удалось извлечь номер телефона.\n"
+                    "Пожалуйста, введите номер вручную:"
+                )
+                return PHONE
         
-        # Проверяем российские форматы
-        if (phone_clean.startswith('+7') and len(phone_clean) == 12) or \
-           (phone_clean.startswith('8') and len(phone_clean) == 11) or \
-           (phone_clean.startswith('7') and len(phone_clean) == 11):
+        # Пользователь вводит телефон вручную
+        phone = user_input
+        
+        # Проверяем валидность телефона
+        if self._validate_phone(phone):
             context.user_data['phone'] = phone
             
+            # Сохраняем телефон пользователя
+            user_id = update.effective_user.id
+            self._save_user_phone(user_id, phone)
+            
             # Форматируем номер для красивого отображения
-            if phone_clean.startswith('+7'):
-                formatted_phone = f"+7 ({phone_clean[2:5]}) {phone_clean[5:8]}-{phone_clean[8:10]}-{phone_clean[10:12]}"
-            elif phone_clean.startswith('8'):
-                formatted_phone = f"8 ({phone_clean[1:4]}) {phone_clean[4:7]}-{phone_clean[7:9]}-{phone_clean[9:11]}"
-            else:
-                formatted_phone = phone
+            formatted_phone = self._format_phone(phone)
             
             name = context.user_data.get('name', '')
-            
-            # Показываем доступные даты
-            tomorrow = (datetime.now() + timedelta(days=1)).strftime('%d.%m.%Y')
-            day_after_tomorrow = (datetime.now() + timedelta(days=2)).strftime('%d.%m.%Y')
             
             await update.message.reply_text(
                 f"✅ Отлично, {name}!\n"
@@ -328,7 +473,11 @@ class BookingHandlers:
             await update.message.reply_text(
                 "❌ Неверный формат телефона.\n"
                 "Пожалуйста, введите российский номер в формате:\n"
-                "+79123456789 или 89123456789"
+                "+79123456789 или 89123456789\n\n"
+                "Примеры корректных номеров:\n"
+                "+7 (912) 345-67-89\n"
+                "89123456789\n"
+                "+79123456789"
             )
             return PHONE
     
@@ -460,6 +609,9 @@ class BookingHandlers:
         time = context.user_data.get('time', '')
         service = context.user_data.get('service', '')
         
+        # Форматируем телефон для красивого отображения
+        formatted_phone = self._format_phone(phone)
+        
         # Получаем день недели для красивого отображения
         try:
             date_obj = datetime.strptime(date, '%d.%m.%Y')
@@ -472,7 +624,7 @@ class BookingHandlers:
 📋 {name}, проверьте вашу запись:
 
 👤 Имя: {name}
-📱 Телефон: {phone}
+📱 Телефон: {formatted_phone}
 📅 Дата: {date_display}
 ⏰ Время: {time}
 💅 Услуга: {service}
@@ -510,12 +662,17 @@ class BookingHandlers:
             # Отправляем уведомление мастеру
             await self.notification_manager.notify_master(booking_data, update.effective_user)
             
+            # Убеждаемся, что телефон сохранен
+            user_id = update.effective_user.id
+            self._save_user_phone(user_id, context.user_data['phone'])
+            
             name = context.user_data.get('name', '')
             await update.message.reply_text(
                 f"🎉 {name}, запись успешно сохранена!\n\n"
                 "✅ Мастер получил уведомление о вашей записи.\n"
                 "⏳ Ожидайте подтверждения в течение часа.\n"
                 "📱 Мы сообщим вам о решении мастера.\n\n"
+                "✅ Ваш номер телефона сохранен для будущих записей.\n\n"
                 "Вы можете записаться снова через главное меню.",
                 reply_markup=self._get_main_menu()
             )
