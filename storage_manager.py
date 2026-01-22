@@ -1,0 +1,265 @@
+"""
+Централизованное управление данными с синхронизацией между:
+- Google Sheets (основное)
+- bookings_storage.json (для быстрого доступа)
+- Кеш в памяти для производительности
+"""
+
+import json
+import os
+from datetime import datetime
+from typing import Dict, List, Optional, Any
+from uuid import uuid4
+
+class StorageManager:
+    def __init__(self, google_sheets=None):
+        self.google_sheets = google_sheets
+        self.data_dir = 'data'
+        self.bookings_file = os.path.join(self.data_dir, 'bookings_storage.json')
+        self.users_file = os.path.join(self.data_dir, 'users_data.json')
+        
+        self._ensure_data_dir()
+        self._ensure_files()
+        
+        # Кеш в памяти для производительности
+        self._bookings_cache = None
+        self._users_cache = None
+    
+    def _ensure_data_dir(self):
+        """Создает папку data если её нет"""
+        if not os.path.exists(self.data_dir):
+            os.makedirs(self.data_dir)
+            print(f"✅ Создана папка {self.data_dir}")
+    
+    def _ensure_files(self):
+        """Создает необходимые файлы"""
+        default_files = {
+            self.bookings_file: {},
+            self.users_file: {}
+        }
+        
+        for file_path, default_data in default_files.items():
+            if not os.path.exists(file_path):
+                with open(file_path, 'w', encoding='utf-8') as f:
+                    json.dump(default_data, f, ensure_ascii=False, indent=2)
+                print(f"✅ Создан файл {file_path}")
+    
+    # === Методы для записей ===
+    
+    def add_booking(self, booking_data: Dict[str, Any]) -> str:
+        """Добавляет запись во все хранилища"""
+        # Генерируем booking_id
+        booking_id = str(uuid4())
+        booking_data['booking_id'] = booking_id
+        booking_data['created_at'] = datetime.now().isoformat()
+        booking_data['status'] = 'ожидает'
+        
+        # 1. Сохраняем в локальное JSON хранилище
+        bookings = self._load_bookings()
+        bookings[booking_id] = booking_data
+        self._save_bookings(bookings)
+        print(f"✅ Запись {booking_id[:8]}... сохранена в JSON")
+        
+        # 2. Сохраняем в Google Sheets/CSV
+        if self.google_sheets:
+            try:
+                # Удаляем служебные поля перед сохранением в Google Sheets
+                gs_data = booking_data.copy()
+                for field in ['booking_id', 'created_at']:
+                    gs_data.pop(field, None)
+                
+                # Добавляем статус по умолчанию
+                if 'status' not in gs_data:
+                    gs_data['status'] = 'ожидает'
+                
+                self.google_sheets.add_booking(gs_data)
+                print(f"✅ Запись {booking_id[:8]}... сохранена в Google Sheets/CSV")
+            except Exception as e:
+                print(f"⚠️ Ошибка сохранения в Google Sheets/CSV: {e}")
+        
+        return booking_id
+    
+    def update_booking_status(self, booking_id: str, status: str, 
+                             master_comment: str = None) -> bool:
+        """Обновляет статус записи во всех хранилищах"""
+        bookings = self._load_bookings()
+        
+        if booking_id not in bookings:
+            print(f"❌ Запись {booking_id} не найдена в хранилище")
+            return False
+        
+        # Обновляем в JSON хранилище
+        bookings[booking_id]['status'] = status
+        bookings[booking_id]['status_updated'] = datetime.now().isoformat()
+        if master_comment:
+            bookings[booking_id]['master_comment'] = master_comment
+        
+        self._save_bookings(bookings)
+        print(f"✅ Статус записи {booking_id[:8]}... обновлен в JSON: {status}")
+        
+        # Обновляем в Google Sheets/CSV
+        if self.google_sheets:
+            try:
+                booking = bookings[booking_id]
+                gs_data = {
+                    'name': booking.get('name', ''),
+                    'date': booking.get('date', ''),
+                    'time': booking.get('time', ''),
+                    'phone': booking.get('phone', '')
+                }
+                self.google_sheets.add_status(gs_data, status)
+                print(f"✅ Статус записи обновлен в Google Sheets/CSV: {status}")
+            except Exception as e:
+                print(f"⚠️ Ошибка обновления в Google Sheets/CSV: {e}")
+        
+        return True
+    
+    def get_booking(self, booking_id: str) -> Optional[Dict]:
+        """Получает запись по ID"""
+        bookings = self._load_bookings()
+        return bookings.get(booking_id)
+    
+    def get_user_bookings(self, telegram_id: str, 
+                         status_filter: List[str] = None) -> List[Dict]:
+        """Получает записи пользователя"""
+        bookings = self._load_bookings()
+        
+        user_bookings = []
+        for booking_id, booking in bookings.items():
+            if str(booking.get('telegram_id')) == str(telegram_id):
+                if status_filter is None or booking.get('status') in status_filter:
+                    user_bookings.append({
+                        'booking_id': booking_id,
+                        **booking
+                    })
+        
+        # Сортировка по дате
+        user_bookings.sort(key=lambda x: (
+            x.get('date', ''),
+            x.get('time', '')
+        ))
+        
+        return user_bookings
+    
+    def cancel_booking_by_id(self, booking_id: str) -> bool:
+        """Отменяет запись по ID"""
+        return self.update_booking_status(booking_id, 'отменено')
+    
+    # === Методы для пользователей ===
+    
+    def save_user_phone(self, telegram_id: str, phone: str):
+        """Сохраняет телефон пользователя"""
+        users = self._load_users()
+        
+        users[str(telegram_id)] = {
+            'phone': phone,
+            'last_updated': datetime.now().isoformat()
+        }
+        
+        self._save_users(users)
+        print(f"✅ Телефон сохранен для пользователя {telegram_id}")
+    
+    def get_user_phone(self, telegram_id: str) -> Optional[str]:
+        """Получает телефон пользователя"""
+        users = self._load_users()
+        user_data = users.get(str(telegram_id))
+        return user_data.get('phone') if user_data else None
+    
+    # === Вспомогательные методы ===
+    
+    def _load_bookings(self) -> Dict:
+        """Загружает записи из файла"""
+        if self._bookings_cache is not None:
+            return self._bookings_cache
+        
+        try:
+            with open(self.bookings_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            data = {}
+        
+        self._bookings_cache = data
+        return data
+    
+    def _save_bookings(self, data: Dict):
+        """Сохраняет записи в файл"""
+        with open(self.bookings_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        self._bookings_cache = data
+    
+    def _load_users(self) -> Dict:
+        """Загружает данные пользователей"""
+        if self._users_cache is not None:
+            return self._users_cache
+        
+        try:
+            with open(self.users_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            data = {}
+        
+        self._users_cache = data
+        return data
+    
+    def _save_users(self, data: Dict):
+        """Сохраняет данные пользователей"""
+        with open(self.users_file, 'w', encoding='utf-8') as f:
+            json.dump(data, f, ensure_ascii=False, indent=2)
+        
+        self._users_cache = data
+    
+    # === Методы для мастера ===
+    
+    def get_bookings_by_status(self, status: str) -> List[Dict]:
+        """Получает записи по статусу"""
+        bookings = self._load_bookings()
+        
+        result = []
+        for booking_id, booking in bookings.items():
+            if booking.get('status') == status:
+                result.append({
+                    'booking_id': booking_id,
+                    **booking
+                })
+        
+        # Сортировка по дате
+        result.sort(key=lambda x: (
+            x.get('date', ''),
+            x.get('time', '')
+        ))
+        
+        return result
+    
+    def get_statistics(self) -> Dict[str, int]:
+        """Возвращает статистику записей"""
+        bookings = self._load_bookings()
+        
+        stats = {
+            'total': len(bookings),
+            'ожидает': 0,
+            'подтверждено': 0,
+            'выполнено': 0,
+            'отклонено мастером': 0,
+            'отменено': 0
+        }
+        
+        for booking in bookings.values():
+            status = booking.get('status')
+            if status in stats:
+                stats[status] += 1
+        
+        return stats
+    
+    def find_booking_by_row_index(self, row_index: int) -> Optional[Dict]:
+        """Находит запись по индексу строки (для совместимости со старым кодом)"""
+        bookings = self._load_bookings()
+        
+        # Преобразуем в список для доступа по индексу
+        bookings_list = list(bookings.items())
+        
+        if 0 <= row_index < len(bookings_list):
+            booking_id, booking = bookings_list[row_index]
+            return {'booking_id': booking_id, **booking}
+        
+        return None

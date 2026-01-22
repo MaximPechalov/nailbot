@@ -34,7 +34,7 @@ class SimpleCSVManager:
                 booking_data.get('service', ''),
                 booking_data.get('telegram_id', ''),
                 booking_data.get('username', ''),
-                'ожидает',  # Статус по умолчанию
+                booking_data.get('status', 'ожидает'),  # Статус из данных
                 ''  # Время изменения статуса
             ]
             

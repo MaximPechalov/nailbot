@@ -1,12 +1,10 @@
 # Конфиденциальные файлы
 .env
 credentials.json
-users_phones.json
-bookings_storage.json
 error_log.txt
 
 # Локальные файлы данных
-bookings.csv
+data/
 
 # Python
 __pycache__/
