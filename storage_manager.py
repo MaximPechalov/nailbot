@@ -52,7 +52,10 @@ class StorageManager:
         booking_id = str(uuid4())
         booking_data['booking_id'] = booking_id
         booking_data['created_at'] = datetime.now().isoformat()
-        booking_data['status'] = 'ожидает'
+        
+        # Устанавливаем статус по умолчанию, если не указан
+        if 'status' not in booking_data:
+            booking_data['status'] = 'ожидает'
         
         # 1. Сохраняем в локальное JSON хранилище
         bookings = self._load_bookings()
@@ -65,12 +68,8 @@ class StorageManager:
             try:
                 # Удаляем служебные поля перед сохранением в Google Sheets
                 gs_data = booking_data.copy()
-                for field in ['booking_id', 'created_at']:
+                for field in ['booking_id', 'created_at', 'original_booking_id', 'master_proposed', 'old_status']:
                     gs_data.pop(field, None)
-                
-                # Добавляем статус по умолчанию
-                if 'status' not in gs_data:
-                    gs_data['status'] = 'ожидает'
                 
                 self.google_sheets.add_booking(gs_data)
                 print(f"✅ Запись {booking_id[:8]}... сохранена в Google Sheets/CSV")
@@ -203,13 +202,16 @@ class StorageManager:
         
         try:
             # 1. Возвращаем оригинальную запись в предыдущий статус
-            # Определяем предыдущий статус
             original_booking = bookings[original_booking_id]
             old_status = original_booking.get('old_status', 'ожидает')
             bookings[original_booking_id]['status'] = old_status
             bookings[original_booking_id]['status_updated'] = datetime.now().isoformat()
             
-            # 2. Удаляем новую запись (или отмечаем как отклоненную)
+            # Удаляем временное поле
+            if 'old_status' in bookings[original_booking_id]:
+                del bookings[original_booking_id]['old_status']
+            
+            # 2. Отклоняем новую запись
             bookings[new_booking_id]['status'] = 'отклонено мастером'
             bookings[new_booking_id]['status_updated'] = datetime.now().isoformat()
             
@@ -259,18 +261,23 @@ class StorageManager:
             print(f"❌ Запись {booking_id} не найдена в хранилище")
             return False
         
-        # Сохраняем старый статус если это перенос
-        if status == 'перенос (ожидание мастера)':
+        # Сохраняем старый статус если это перенос и старый статус еще не сохранен
+        if status == 'перенос (ожидание мастера)' and 'old_status' not in bookings[booking_id]:
+            bookings[booking_id]['old_status'] = bookings[booking_id].get('status', 'ожидает')
+        
+        # Сохраняем старый статус если это перенос от мастера
+        if status == 'перенос (ожидание клиента)' and 'old_status' not in bookings[booking_id]:
             bookings[booking_id]['old_status'] = bookings[booking_id].get('status', 'ожидает')
         
         # Обновляем в JSON хранилище
+        old_status = bookings[booking_id].get('status')
         bookings[booking_id]['status'] = status
         bookings[booking_id]['status_updated'] = datetime.now().isoformat()
         if master_comment:
             bookings[booking_id]['master_comment'] = master_comment
         
         self._save_bookings(bookings)
-        print(f"✅ Статус записи {booking_id[:8]}... обновлен в JSON: {status}")
+        print(f"✅ Статус записи {booking_id[:8]}... изменен: {old_status} -> {status}")
         
         # Обновляем в Google Sheets/CSV
         if self.google_sheets:
@@ -391,6 +398,27 @@ class StorageManager:
     def get_reschedule_requests_count(self) -> int:
         """Получает количество запросов на перенос"""
         return len(self.get_reschedule_requests())
+    
+    def get_master_proposed_bookings(self) -> List[Dict]:
+        """Получает записи, предложенные мастером для переноса"""
+        bookings = self._load_bookings()
+        
+        result = []
+        for booking_id, booking in bookings.items():
+            if (booking.get('status') == 'перенос (ожидание клиента)' and 
+                booking.get('master_proposed')):
+                result.append({
+                    'booking_id': booking_id,
+                    **booking
+                })
+        
+        # Сортировка по дате
+        result.sort(key=lambda x: (
+            x.get('date', ''),
+            x.get('time', '')
+        ))
+        
+        return result
     
     # === Методы для пользователей ===
     

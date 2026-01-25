@@ -35,16 +35,24 @@ def main():
     booking_handlers = BookingHandlers(storage_manager, notification_service)
     
     # Определяем состояния для ConversationHandler (теперь здесь)
-    # ДОЛЖНО БЫТЬ 13 ЗНАЧЕНИЙ ДЛЯ range(13)
     (
         NAME, PHONE, DATE, TIME, SERVICE, CONFIRM, 
         CANCEL_SELECT, CANCEL_CONFIRM,
-        RESCHEDULE_SELECT, RESCHEDULE_DATE, RESCHEDULE_TIME, RESCHEDULE_CONFIRM,
-        WAITING_RESCHEDULE_DATE  # ДОБАВИЛИ 13-й элемент
-    ) = range(13)
+        RESCHEDULE_SELECT, RESCHEDULE_DATE, RESCHEDULE_TIME, RESCHEDULE_CONFIRM
+    ) = range(12)
+    
+    # Определяем состояния для мастера
+    (
+        MASTER_RESCHEDULE_DATE, MASTER_RESCHEDULE_TIME, MASTER_RESCHEDULE_CONFIRM
+    ) = range(100, 103)
     
     # Создаем приложение
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
+    
+    # Функция для проверки, является ли пользователь мастером
+    def is_master(update):
+        """Проверяет, является ли пользователь мастером"""
+        return str(update.effective_user.id) == str(MASTER_CHAT_ID)
     
     # === ОТДЕЛЬНЫЙ ConversationHandler для записи ===
     booking_conv_handler = ConversationHandler(
@@ -98,7 +106,7 @@ def main():
         ]
     )
     
-    # === ОТДЕЛЬНЫЙ ConversationHandler для переноса записей ===
+    # === ОТДЕЛЬНЫЙ ConversationHandler для переноса записей (клиент) ===
     reschedule_conv_handler = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Regex('^🔄 Перенести запись$'), 
@@ -130,6 +138,50 @@ def main():
         ]
     )
     
+    # === ОТДЕЛЬНЫЙ ConversationHandler для переноса записей (мастер) ===
+    # Создаем функцию-обертку для проверки мастера
+    async def master_reschedule_date_wrapper(update, context):
+        if not is_master(update):
+            await update.message.reply_text("❌ Эта команда доступна только мастеру.")
+            return ConversationHandler.END
+        return await master_panel.handle_master_reschedule_date(update, context)
+    
+    async def master_reschedule_time_wrapper(update, context):
+        if not is_master(update):
+            await update.message.reply_text("❌ Эта команда доступна только мастеру.")
+            return ConversationHandler.END
+        return await master_panel.handle_master_reschedule_time(update, context)
+    
+    async def master_reschedule_confirm_wrapper(update, context):
+        if not is_master(update):
+            await update.message.reply_text("❌ Эта команда доступна только мастеру.")
+            return ConversationHandler.END
+        return await master_panel.handle_master_reschedule_confirm(update, context)
+    
+    async def master_cancel_reschedule_wrapper(update, context):
+        if not is_master(update):
+            await update.message.reply_text("❌ Эта команда доступна только мастеру.")
+            return ConversationHandler.END
+        return await master_panel.handle_master_cancel_reschedule(update, context)
+    
+    master_reschedule_conv_handler = ConversationHandler(
+        entry_points=[],
+        states={
+            MASTER_RESCHEDULE_DATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, master_reschedule_date_wrapper)
+            ],
+            MASTER_RESCHEDULE_TIME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, master_reschedule_time_wrapper)
+            ],
+            MASTER_RESCHEDULE_CONFIRM: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, master_reschedule_confirm_wrapper)
+            ],
+        },
+        fallbacks=[
+            MessageHandler(filters.Regex('^❌ Нет, отменить перенос$'), master_cancel_reschedule_wrapper)
+        ]
+    )
+    
     # === Добавляем обработчики в правильном порядке ===
     
     # 1. Обработчик callback-кнопок мастера (включая переносы)
@@ -144,16 +196,19 @@ def main():
         pattern="^reschedule_client_"
     ))
     
-    # 3. ConversationHandler для переноса записей
+    # 3. ConversationHandler для переноса записей (мастер)
+    application.add_handler(master_reschedule_conv_handler)
+    
+    # 4. ConversationHandler для переноса записей (клиент)
     application.add_handler(reschedule_conv_handler)
     
-    # 4. ConversationHandler для отмены записей
+    # 5. ConversationHandler для отмены записей
     application.add_handler(cancel_conv_handler)
     
-    # 5. ConversationHandler для создания записи
+    # 6. ConversationHandler для создания записи
     application.add_handler(booking_conv_handler)
     
-    # 6. Команда для меню мастера
+    # 7. Команда для меню мастера
     async def send_master_menu(update, context):
         """Команда для отправки меню мастера"""
         if str(update.effective_chat.id) != MASTER_CHAT_ID:
@@ -164,24 +219,48 @@ def main():
     
     application.add_handler(CommandHandler("master", send_master_menu))
     
-    # 7. Обработчик команды /start
+    # 8. Обработчик команды /start
     application.add_handler(CommandHandler("start", booking_handlers.start))
     
-    # 8. Обработчик главного меню (только информационные кнопки)
+    # 9. Обработчик главного меню (только информационные кнопки)
     application.add_handler(MessageHandler(
         filters.Regex('^(ℹ️ О нас|📞 Контакты|👨‍💻 Поддержка)$'), 
         booking_handlers.handle_main_menu
     ))
     
-    # 9. Обработчик неизвестных команд
+    # 10. Обработчик неизвестных команд
     application.add_handler(MessageHandler(
         filters.COMMAND, 
         booking_handlers.handle_unknown
     ))
     
-    # 10. Запасной обработчик для любых других сообщений
+    # 11. Запасной обработчик для любых других сообщений
+    # Сначала проверяем, не мастер ли это в процессе переноса
+    async def handle_text_messages(update, context):
+        """Обрабатывает текстовые сообщения"""
+        # Проверяем, не находится ли мастер в процессе переноса
+        if is_master(update):
+            # Проверяем, есть ли состояние переноса в context.user_data
+            if 'master_reschedule' in context.user_data:
+                current_state = context.user_data.get('_conversation_state')
+                if current_state == MASTER_RESCHEDULE_DATE:
+                    return await master_reschedule_date_wrapper(update, context)
+                elif current_state == MASTER_RESCHEDULE_TIME:
+                    return await master_reschedule_time_wrapper(update, context)
+                elif current_state == MASTER_RESCHEDULE_CONFIRM:
+                    return await master_reschedule_confirm_wrapper(update, context)
+        
+        # Если не мастер в процессе переноса, используем стандартный обработчик
+        return await booking_handlers.handle_unknown(update, context)
+    
     application.add_handler(MessageHandler(
-        filters.TEXT, 
+        filters.TEXT & ~filters.COMMAND, 
+        handle_text_messages
+    ))
+    
+    # 12. Обработчик для любого другого контента
+    application.add_handler(MessageHandler(
+        filters.ALL, 
         booking_handlers.handle_unknown
     ))
     
@@ -193,9 +272,6 @@ def main():
             print("✅ Меню мастера отправлено при запуске")
         except Exception as e:
             print(f"⚠️ Не удалось отправить меню мастера при запуске: {e}")
-            # Можно добавить детальную информацию об ошибке
-            import traceback
-            traceback.print_exc()
     
     application.post_init = post_init
     
@@ -205,7 +281,7 @@ def main():
     print("📱 Перейдите в Telegram и найдите вашего бота")
     print("👑 Мастер получит уведомления и меню управления")
     print("💼 Команда /master - открыть панель управления")
-    print("🔄 Доступен функционал переноса записей")
+    print("🔄 Доступен функционал переноса записей (и для мастера тоже!)")
     
     # Проверяем, что MASTER_CHAT_ID установлен
     if not MASTER_CHAT_ID or MASTER_CHAT_ID == "ваш_chat_id_здесь":
