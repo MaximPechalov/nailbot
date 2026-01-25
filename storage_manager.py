@@ -67,11 +67,13 @@ class StorageManager:
         # Сохраняем в Google Sheets/CSV
         if self.google_sheets:
             try:
-                # Удаляем служебные поля перед сохранением в Google Sheets
+                # Копируем данные для Google Sheets с ID
                 gs_data = booking_data.copy()
-                for field in ['booking_id', 'created_at', 'original_booking_id', 
-                            'master_proposed', 'old_status', 'reschedule_type']:
-                    gs_data.pop(field, None)
+                
+                # Убедимся, что есть все необходимые поля
+                gs_data.setdefault('status_updated', '')
+                gs_data.setdefault('reschedule_id', '')
+                gs_data.setdefault('original_booking_id', '')
                 
                 self.google_sheets.add_booking(gs_data)
                 print(f"✅ Запись {booking_id[:8]}... сохранена в Google Sheets/CSV")
@@ -103,14 +105,20 @@ class StorageManager:
         if self.google_sheets:
             try:
                 booking = bookings[booking_id]
+                
+                # Собираем данные для поиска записи в таблице
                 gs_data = {
+                    'booking_id': booking_id,
                     'name': booking.get('name', ''),
                     'date': booking.get('date', ''),
                     'time': booking.get('time', ''),
                     'phone': booking.get('phone', '')
                 }
-                self.google_sheets.add_status(gs_data, status)
-                print(f"✅ Статус записи обновлен в Google Sheets/CSV: {status}")
+                
+                success = self.google_sheets.add_status(gs_data, status)
+                if not success:
+                    print(f"⚠️ Не удалось обновить статус в Google Sheets")
+                
             except Exception as e:
                 print(f"⚠️ Ошибка обновления в Google Sheets/CSV: {e}")
         

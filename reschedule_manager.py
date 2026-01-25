@@ -216,6 +216,7 @@ class RescheduleManager:
     def reject_reschedule(self, reschedule_booking_id: str, rejected_by: str, reason: str = "") -> Tuple[bool, str]:
         """
         Отклоняет перенос (клиентом или мастером)
+        Важно: возвращаем оригинальную запись в старый статус
         """
         lock = self._get_lock(reschedule_booking_id)
         
@@ -244,23 +245,23 @@ class RescheduleManager:
                 if not original_booking:
                     return False, "Исходная запись не найдена"
                 
-                # 4. Обновляем статусы
+                # 4. Возвращаем оригинальную запись в старый статус
                 old_status = reschedule_booking.get('old_status', 'ожидает')
                 
-                # Возвращаем оригинальную запись в старый статус
+                # Критически важно: обновляем статус оригинальной записи
                 self.storage.update_booking_status(
                     original_booking_id, 
                     old_status,
                     master_comment=f"Перенос отклонен ({rejected_by}): {reason}"
                 )
                 
-                # Отклоняем запись переноса
+                # 5. Отклоняем запись переноса
                 self.storage.update_booking_status(reschedule_booking_id, 'отклонено')
                 
-                # Удаляем связь
+                # 6. Удаляем связь
                 self._remove_reschedule_relation(original_booking_id)
                 
-                print(f"✅ Перенос отклонен ({rejected_by}): {reschedule_booking_id[:8]}")
+                print(f"✅ Перенос отклонен ({rejected_by}): {reschedule_booking_id[:8]}, оригинал возвращен в {old_status}")
                 return True, "Перенос отклонен"
                 
             except Exception as e:
@@ -301,7 +302,7 @@ class RescheduleManager:
                 # 5. Удаляем связь
                 self._remove_reschedule_relation(original_booking_id)
                 
-                print(f"✅ Запрос переноса отменен: {original_booking_id[:8]}")
+                print(f"✅ Запрос переноса отменен: {original_booking_id[:8]}, возвращен в {old_status}")
                 return True, "Запрос переноса отменен"
                 
             except Exception as e:

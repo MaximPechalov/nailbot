@@ -1,6 +1,6 @@
 import gspread
 from google.oauth2.service_account import Credentials
-from config import CREDENTIALS_FILE, SPREADSHEET_ID, COLUMNS
+from config import CREDENTIALS_FILE, SPREADSHEET_ID, COLUMNS, STATUS_COLORS, STATUS_PRIORITY
 from datetime import datetime
 import re
 
@@ -48,14 +48,14 @@ class GoogleSheets:
         """Форматирование заголовков таблицы"""
         try:
             # Жирный шрифт для заголовков
-            self.sheet.format("A1:J1", {
+            self.sheet.format("A1:M1", {
                 "textFormat": {"bold": True},
                 "horizontalAlignment": "CENTER",
                 "backgroundColor": {"red": 0.9, "green": 0.9, "blue": 0.9}
             })
             
-            # Настройка ширины колонок
-            self.sheet.columns_auto_resize(0, 9)  # Автоширина для колонок A-J
+            # Настройка ширины колонок (ID - уже, остальные авто)
+            self.sheet.columns_auto_resize(1, 12)  # Автоширина для колонок B-M
             
         except Exception as e:
             print(f"⚠️ Ошибка форматирования заголовков: {e}")
@@ -77,48 +77,48 @@ class GoogleSheets:
     
     def _get_status_color(self, status):
         """Возвращает цвет фона в зависимости от статуса"""
-        colors = {
-            'ожидает': {"red": 1.0, "green": 1.0, "blue": 0.9},
-            'подтверждено': {"red": 0.85, "green": 1.0, "blue": 0.85},
-            'выполнено': {"red": 0.9, "green": 0.9, "blue": 1.0},
-            'отменено': {"red": 0.95, "green": 0.95, "blue": 0.95},
-            'отклонено': {"red": 1.0, "green": 0.85, "blue": 0.85},
-            'запрос переноса': {"red": 1.0, "green": 0.9, "blue": 0.8},
-            'предложение переноса': {"red": 0.9, "green": 0.95, "blue": 1.0},
-        }
-        return colors.get(status, {"red": 1.0, "green": 1.0, "blue": 1.0})
+        return STATUS_COLORS.get(status.lower(), {"red": 1.0, "green": 1.0, "blue": 1.0})
+    
+    def _get_sorting_key(self, record):
+        """Возвращает ключ для сортировки записей по приоритету статуса и дате"""
+        if len(record) < 5:  # Минимальное количество колонок
+            return (999, datetime.now())
+        
+        # Получаем статус (колонка J если считать с 1, но индекс 9 если с 0)
+        status = 'ожидает'  # По умолчанию
+        if len(record) > 9 and record[9]:
+            status = record[9].lower()
+        
+        # Получаем дату и время
+        date_str = record[4] if len(record) > 4 else ""
+        time_str = record[5] if len(record) > 5 else ""
+        
+        # Приоритет статуса
+        priority = STATUS_PRIORITY.get(status, 999)
+        
+        # Дата и время
+        try:
+            dt = self._parse_date_time(date_str, time_str)
+        except:
+            dt = datetime.now()
+        
+        return (priority, dt)
     
     def _sort_bookings(self, all_bookings):
-        """Сортирует записи по дате и времени"""
+        """Сортирует записи по статусу и дате"""
         try:
-            # Создаем список кортежей (дата_время, индекс, запись)
-            bookings_with_dates = []
+            if len(all_bookings) <= 1:  # Только заголовки
+                return all_bookings
             
-            for i, record in enumerate(all_bookings):
-                if i == 0:  # Пропускаем заголовки
-                    continue
-                
-                if len(record) >= 5:
-                    date_str = record[3] if len(record) > 3 else ""
-                    time_str = record[4] if len(record) > 4 else ""
-                    
-                    if date_str and time_str:
-                        try:
-                            dt = self._parse_date_time(date_str, time_str)
-                            bookings_with_dates.append((dt, i, record))
-                        except:
-                            bookings_with_dates.append((datetime.now(), i, record))
+            # Отделяем заголовки
+            headers = all_bookings[0]
+            bookings = all_bookings[1:]
             
-            # Сортируем по дате и времени
-            bookings_with_dates.sort(key=lambda x: x[0])
+            # Сортируем записи
+            sorted_bookings = sorted(bookings, key=self._get_sorting_key)
             
-            # Возвращаем отсортированные записи
-            sorted_bookings = [all_bookings[0]]  # Заголовки
-            
-            for dt, original_index, record in bookings_with_dates:
-                sorted_bookings.append(record)
-            
-            return sorted_bookings
+            # Возвращаем с заголовками
+            return [headers] + sorted_bookings
             
         except Exception as e:
             print(f"❌ Ошибка сортировки записей: {e}")
@@ -131,12 +131,12 @@ class GoogleSheets:
                 if i == 0:  # Пропускаем заголовки
                     continue
                 
-                if len(record) >= 9:  # Проверяем наличие колонки статуса
-                    status = record[8].lower() if record[8] else 'ожидает'
+                if len(record) >= 10:  # Проверяем наличие колонки статуса
+                    status = record[9].lower() if record[9] else 'ожидает'
                     color = self._get_status_color(status)
                     
-                    # Применяем цвет к строке (колонки A-J)
-                    row_range = f"A{i+1}:J{i+1}"
+                    # Применяем цвет ко всей строке (колонки A-M)
+                    row_range = f"A{i+1}:M{i+1}"
                     self.sheet.format(row_range, {
                         "backgroundColor": color,
                         "horizontalAlignment": "LEFT",
@@ -151,7 +151,9 @@ class GoogleSheets:
     def add_booking(self, booking_data):
         """Добавляет запись в таблицу и сортирует"""
         try:
+            # Формируем строку с учетом всех колонок
             row = [
+                booking_data.get('booking_id', '')[:8] + '...',  # ID записи (усеченный)
                 booking_data.get('timestamp', ''),
                 booking_data.get('name', ''),
                 booking_data.get('phone', ''),
@@ -161,7 +163,9 @@ class GoogleSheets:
                 booking_data.get('telegram_id', ''),
                 booking_data.get('username', ''),
                 booking_data.get('status', 'ожидает'),
-                ''  # Время изменения статуса
+                booking_data.get('status_updated', ''),
+                booking_data.get('reschedule_id', ''),
+                booking_data.get('original_booking_id', '')
             ]
             
             # Добавляем запись
@@ -188,55 +192,50 @@ class GoogleSheets:
             # Сортируем записи
             sorted_bookings = self._sort_bookings(all_bookings)
             
-            # Очищаем таблицу (кроме заголовков)
-            self.sheet.delete_rows(2, len(all_bookings))
-            
-            # Добавляем отсортированные записи
-            if len(sorted_bookings) > 1:
-                for record in sorted_bookings[1:]:
-                    self.sheet.append_row(record)
+            # Обновляем всю таблицу
+            self._update_entire_sheet(sorted_bookings)
             
             # Применяем цветовое кодирование
-            updated_bookings = self.sheet.get_all_values()
-            self._apply_color_coding(updated_bookings)
+            self._apply_color_coding(sorted_bookings)
             
-            print(f"✅ Таблица отсортирована по дате и времени")
+            print(f"✅ Таблица отсортирована по статусу и дате")
             
         except Exception as e:
-            print(f"❌ Ошибка при сортировке таблица: {e}")
+            print(f"❌ Ошибка при сортировке таблицы: {e}")
+    
+    def _update_entire_sheet(self, bookings):
+        """Обновляет всю таблицу новыми данными"""
+        try:
+            # Очищаем таблицу
+            self.sheet.clear()
+            
+            # Добавляем заголовки и данные
+            if bookings:
+                self.sheet.append_rows(bookings)
+            
+        except Exception as e:
+            print(f"❌ Ошибка обновления таблицы: {e}")
     
     def add_status(self, booking_data, status):
         """Обновляет статус записи в таблице"""
         try:
-            # Находим строку с записью
+            # Находим строку с записью по ID (колонка A)
             all_records = self.sheet.get_all_values()
             
             for i, record in enumerate(all_records):
-                if (i > 0 and
-                    len(record) >= 5 and
-                    record[1] == booking_data.get('name') and
-                    record[3] == booking_data.get('date') and
-                    record[4] == booking_data.get('time')):
+                if i == 0:  # Пропускаем заголовки
+                    continue
+                
+                if (len(record) > 0 and 
+                    booking_data.get('booking_id', '').startswith(record[0].replace('...', ''))):
                     
                     # Обновляем статус и время изменения
                     update_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     
-                    if len(record) >= 9:
-                        self.sheet.update_cell(i + 1, 9, status)
-                    else:
-                        self.sheet.update_cell(i + 1, 9, status)
-                    
                     if len(record) >= 10:
-                        self.sheet.update_cell(i + 1, 10, update_time)
-                    else:
-                        self.sheet.update_cell(i + 1, 10, update_time)
-                    
-                    # Применяем цвет
-                    color = self._get_status_color(status.lower())
-                    row_range = f"A{i+1}:J{i+1}"
-                    self.sheet.format(row_range, {
-                        "backgroundColor": color
-                    })
+                        self.sheet.update_cell(i + 1, 10, status)  # Статус (колонка J)
+                    if len(record) >= 11:
+                        self.sheet.update_cell(i + 1, 11, update_time)  # Время изменения (колонка K)
                     
                     print(f"✅ Статус обновлен в строке {i + 1}: {status}")
                     
@@ -246,6 +245,29 @@ class GoogleSheets:
                     return True
             
             print(f"⚠️ Запись не найдена для обновления статуса")
+            
+            # Пробуем найти по другим полям (старый метод для обратной совместимости)
+            for i, record in enumerate(all_records):
+                if i == 0:
+                    continue
+                
+                if (len(record) >= 5 and
+                    record[2] == booking_data.get('name') and
+                    record[4] == booking_data.get('date') and
+                    record[5] == booking_data.get('time')):
+                    
+                    update_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+                    
+                    if len(record) >= 10:
+                        self.sheet.update_cell(i + 1, 10, status)
+                    if len(record) >= 11:
+                        self.sheet.update_cell(i + 1, 11, update_time)
+                    
+                    print(f"✅ Статус обновлен в строке {i + 1} (поиск по имени): {status}")
+                    
+                    self._sort_and_update_all()
+                    return True
+            
             return False
             
         except Exception as e:
@@ -258,15 +280,11 @@ class GoogleSheets:
             # Обновляем статус и время изменения
             update_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
-            self.sheet.update_cell(row_index + 1, 9, status)
-            self.sheet.update_cell(row_index + 1, 10, update_time)
+            self.sheet.update_cell(row_index + 1, 10, status)  # Статус (колонка J)
+            self.sheet.update_cell(row_index + 1, 11, update_time)  # Время изменения (колонка K)
             
-            # Применяем цвет
-            color = self._get_status_color(status.lower())
-            row_range = f"A{row_index + 1}:J{row_index + 1}"
-            self.sheet.format(row_range, {
-                "backgroundColor": color
-            })
+            # Обновляем сортировку
+            self._sort_and_update_all()
             
             print(f"✅ Статус обновлен в строке {row_index + 1}: {status}")
             return True
@@ -293,14 +311,14 @@ class GoogleSheets:
                 if i == 0:
                     continue
                 
-                if len(record) >= 9 and record[8].lower() == status.lower():
+                if len(record) >= 10 and record[9].lower() == status.lower():
                     result.append({
                         'row': i + 1,
                         'data': record,
-                        'name': record[1] if len(record) > 1 else '',
-                        'date': record[3] if len(record) > 3 else '',
-                        'time': record[4] if len(record) > 4 else '',
-                        'status': record[8] if len(record) > 8 else ''
+                        'name': record[2] if len(record) > 2 else '',
+                        'date': record[4] if len(record) > 4 else '',
+                        'time': record[5] if len(record) > 5 else '',
+                        'status': record[9] if len(record) > 9 else ''
                     })
             
             return result
