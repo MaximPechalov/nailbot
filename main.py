@@ -1,5 +1,5 @@
 """
-Основной файл с исправленным ConversationHandler
+Основной файл - обновлен для новой логики переносов
 """
 
 from telegram.ext import Application, CommandHandler, ConversationHandler, MessageHandler, filters, CallbackQueryHandler
@@ -24,24 +24,22 @@ def main():
     from notification_service import NotificationService
     from master_panel import MasterPanel
     
-    # Импортируем BookingHandlers и все состояния отдельно
+    # Импортируем BookingHandlers
     from bot_handlers import BookingHandlers
     
     storage_manager = StorageManager(google_sheets)
     notification_service = NotificationService(storage_manager)
     master_panel = MasterPanel(storage_manager, notification_service)
     
-    # BookingHandlers теперь использует storage_manager вместо google_sheets напрямую
     booking_handlers = BookingHandlers(storage_manager, notification_service)
     
-    # Определяем состояния для ConversationHandler (теперь здесь)
+    # Определяем состояния
     (
         NAME, PHONE, DATE, TIME, SERVICE, CONFIRM, 
         CANCEL_SELECT, CANCEL_CONFIRM,
         RESCHEDULE_SELECT, RESCHEDULE_DATE, RESCHEDULE_TIME, RESCHEDULE_CONFIRM
     ) = range(12)
     
-    # Определяем состояния для мастера
     (
         MASTER_RESCHEDULE_DATE, MASTER_RESCHEDULE_TIME, MASTER_RESCHEDULE_CONFIRM
     ) = range(100, 103)
@@ -49,12 +47,11 @@ def main():
     # Создаем приложение
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     
-    # Функция для проверки, является ли пользователь мастером
     def is_master(update):
         """Проверяет, является ли пользователь мастером"""
         return str(update.effective_user.id) == str(MASTER_CHAT_ID)
     
-    # === ОТДЕЛЬНЫЙ ConversationHandler для записи ===
+    # === ConversationHandler для записи ===
     booking_conv_handler = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Regex('^📝 Записаться на маникюр$'), 
@@ -82,7 +79,7 @@ def main():
         ]
     )
     
-    # === ОТДЕЛЬНЫЙ ConversationHandler для отмены записей ===
+    # === ConversationHandler для отмены записей ===
     cancel_conv_handler = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Regex('^📅 Мои записи$'), 
@@ -106,7 +103,7 @@ def main():
         ]
     )
     
-    # === ОТДЕЛЬНЫЙ ConversationHandler для переноса записей (клиент) ===
+    # === ConversationHandler для переноса записей (клиент) ===
     reschedule_conv_handler = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Regex('^🔄 Перенести запись$'), 
@@ -138,8 +135,7 @@ def main():
         ]
     )
     
-    # === ОТДЕЛЬНЫЙ ConversationHandler для переноса записей (мастер) ===
-    # Создаем функцию-обертку для проверки мастера
+    # === ConversationHandler для переноса записей (мастер) ===
     async def master_reschedule_date_wrapper(update, context):
         if not is_master(update):
             await update.message.reply_text("❌ Эта команда доступна только мастеру.")
@@ -178,37 +174,31 @@ def main():
             ],
         },
         fallbacks=[
-            MessageHandler(filters.Regex('^❌ Нет, отменить перенос$'), master_cancel_reschedule_wrapper)
+            MessageHandler(filters.Regex('^❌ Нет, отменить$'), master_cancel_reschedule_wrapper)
         ]
     )
     
-    # === Добавляем обработчики в правильном порядке ===
+    # === Добавляем обработчики ===
     
-    # 1. Обработчик callback-кнопок мастера (включая переносы)
+    # 1. Обработчик callback-кнопок
     application.add_handler(CallbackQueryHandler(
         master_panel.handle_callback,
         pattern="^(action_|reschedule_|view_|menu_)"
     ))
     
-    # 2. Обработчик callback-кнопок клиента для переносов
-    application.add_handler(CallbackQueryHandler(
-        master_panel.handle_callback,
-        pattern="^reschedule_client_"
-    ))
-    
-    # 3. ConversationHandler для переноса записей (мастер)
+    # 2. ConversationHandler для переноса записей (мастер)
     application.add_handler(master_reschedule_conv_handler)
     
-    # 4. ConversationHandler для переноса записей (клиент)
+    # 3. ConversationHandler для переноса записей (клиент)
     application.add_handler(reschedule_conv_handler)
     
-    # 5. ConversationHandler для отмены записей
+    # 4. ConversationHandler для отмены записей
     application.add_handler(cancel_conv_handler)
     
-    # 6. ConversationHandler для создания записи
+    # 5. ConversationHandler для создания записи
     application.add_handler(booking_conv_handler)
     
-    # 7. Команда для меню мастера
+    # 6. Команда для меню мастера
     async def send_master_menu(update, context):
         """Команда для отправки меню мастера"""
         if str(update.effective_chat.id) != MASTER_CHAT_ID:
@@ -219,28 +209,25 @@ def main():
     
     application.add_handler(CommandHandler("master", send_master_menu))
     
-    # 8. Обработчик команды /start
+    # 7. Обработчик команды /start
     application.add_handler(CommandHandler("start", booking_handlers.start))
     
-    # 9. Обработчик главного меню (только информационные кнопки)
+    # 8. Обработчик главного меню
     application.add_handler(MessageHandler(
         filters.Regex('^(ℹ️ О нас|📞 Контакты|👨‍💻 Поддержка)$'), 
         booking_handlers.handle_main_menu
     ))
     
-    # 10. Обработчик неизвестных команд
+    # 9. Обработчик неизвестных команд
     application.add_handler(MessageHandler(
         filters.COMMAND, 
         booking_handlers.handle_unknown
     ))
     
-    # 11. Запасной обработчик для любых других сообщений
-    # Сначала проверяем, не мастер ли это в процессе переноса
+    # 10. Запасной обработчик
     async def handle_text_messages(update, context):
         """Обрабатывает текстовые сообщения"""
-        # Проверяем, не находится ли мастер в процессе переноса
         if is_master(update):
-            # Проверяем, есть ли состояние переноса в context.user_data
             if 'master_reschedule' in context.user_data:
                 current_state = context.user_data.get('_conversation_state')
                 if current_state == MASTER_RESCHEDULE_DATE:
@@ -250,7 +237,6 @@ def main():
                 elif current_state == MASTER_RESCHEDULE_CONFIRM:
                     return await master_reschedule_confirm_wrapper(update, context)
         
-        # Если не мастер в процессе переноса, используем стандартный обработчик
         return await booking_handlers.handle_unknown(update, context)
     
     application.add_handler(MessageHandler(
@@ -258,7 +244,7 @@ def main():
         handle_text_messages
     ))
     
-    # 12. Обработчик для любого другого контента
+    # 11. Обработчик для любого другого контента
     application.add_handler(MessageHandler(
         filters.ALL, 
         booking_handlers.handle_unknown
@@ -281,13 +267,10 @@ def main():
     print("📱 Перейдите в Telegram и найдите вашего бота")
     print("👑 Мастер получит уведомления и меню управления")
     print("💼 Команда /master - открыть панель управления")
-    print("🔄 Доступен функционал переноса записей (и для мастера тоже!)")
     
-    # Проверяем, что MASTER_CHAT_ID установлен
+    # Проверяем MASTER_CHAT_ID
     if not MASTER_CHAT_ID or MASTER_CHAT_ID == "ваш_chat_id_здесь":
         print("❌ ВНИМАНИЕ: MASTER_CHAT_ID не установлен в .env файле!")
-        print("❌ Меню мастера не будет отправляться")
-        print("❌ Установите правильный MASTER_CHAT_ID в файле .env")
     
     application.run_polling()
 

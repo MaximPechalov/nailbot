@@ -78,14 +78,15 @@ class GoogleSheets:
     def _get_status_color(self, status):
         """Возвращает цвет фона в зависимости от статуса"""
         colors = {
-            'ожидает': {"red": 1.0, "green": 1.0, "blue": 0.9},  # Светло-желтый
-            'подтверждено': {"red": 0.85, "green": 1.0, "blue": 0.85},  # Светло-зеленый
-            'отклонено': {"red": 1.0, "green": 0.85, "blue": 0.85},  # Светло-красный
-            'отклонено мастером': {"red": 1.0, "green": 0.75, "blue": 0.75},  # Красный
-            'выполнено': {"red": 0.9, "green": 0.9, "blue": 1.0},  # Светло-синий
-            'отменено': {"red": 0.95, "green": 0.95, "blue": 0.95},  # Серый
+            'ожидает': {"red": 1.0, "green": 1.0, "blue": 0.9},
+            'подтверждено': {"red": 0.85, "green": 1.0, "blue": 0.85},
+            'выполнено': {"red": 0.9, "green": 0.9, "blue": 1.0},
+            'отменено': {"red": 0.95, "green": 0.95, "blue": 0.95},
+            'отклонено': {"red": 1.0, "green": 0.85, "blue": 0.85},
+            'запрос переноса': {"red": 1.0, "green": 0.9, "blue": 0.8},
+            'предложение переноса': {"red": 0.9, "green": 0.95, "blue": 1.0},
         }
-        return colors.get(status, {"red": 1.0, "green": 1.0, "blue": 1.0})  # Белый по умолчанию
+        return colors.get(status, {"red": 1.0, "green": 1.0, "blue": 1.0})
     
     def _sort_bookings(self, all_bookings):
         """Сортирует записи по дате и времени"""
@@ -106,7 +107,6 @@ class GoogleSheets:
                             dt = self._parse_date_time(date_str, time_str)
                             bookings_with_dates.append((dt, i, record))
                         except:
-                            # Если не удалось распарсить, добавляем с текущим временем
                             bookings_with_dates.append((datetime.now(), i, record))
             
             # Сортируем по дате и времени
@@ -160,7 +160,7 @@ class GoogleSheets:
                 booking_data.get('service', ''),
                 booking_data.get('telegram_id', ''),
                 booking_data.get('username', ''),
-                booking_data.get('status', 'ожидает'),  # Статус из данных
+                booking_data.get('status', 'ожидает'),
                 ''  # Время изменения статуса
             ]
             
@@ -191,9 +191,9 @@ class GoogleSheets:
             # Очищаем таблицу (кроме заголовков)
             self.sheet.delete_rows(2, len(all_bookings))
             
-            # Добавляем отсортированные записи (начиная с заголовков)
+            # Добавляем отсортированные записи
             if len(sorted_bookings) > 1:
-                for record in sorted_bookings[1:]:  # Пропускаем уже существующие заголовки
+                for record in sorted_bookings[1:]:
                     self.sheet.append_row(record)
             
             # Применяем цветовое кодирование
@@ -212,30 +212,26 @@ class GoogleSheets:
             all_records = self.sheet.get_all_values()
             
             for i, record in enumerate(all_records):
-                # Проверяем по нескольким параметрам
-                if (i > 0 and  # Пропускаем заголовки
+                if (i > 0 and
                     len(record) >= 5 and
-                    record[1] == booking_data.get('name') and  # Имя
-                    record[3] == booking_data.get('date') and  # Дата
-                    record[4] == booking_data.get('time')):    # Время
+                    record[1] == booking_data.get('name') and
+                    record[3] == booking_data.get('date') and
+                    record[4] == booking_data.get('time')):
                     
                     # Обновляем статус и время изменения
                     update_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     
-                    # Обновляем ячейки
                     if len(record) >= 9:
-                        self.sheet.update_cell(i + 1, 9, status)  # Статус в колонке 9
+                        self.sheet.update_cell(i + 1, 9, status)
                     else:
-                        # Если колонки нет, добавляем
                         self.sheet.update_cell(i + 1, 9, status)
                     
                     if len(record) >= 10:
-                        self.sheet.update_cell(i + 1, 10, update_time)  # Время в колонке 10
+                        self.sheet.update_cell(i + 1, 10, update_time)
                     else:
-                        # Если колонки нет, добавляем
                         self.sheet.update_cell(i + 1, 10, update_time)
                     
-                    # Применяем цвет в зависимости от статуса
+                    # Применяем цвет
                     color = self._get_status_color(status.lower())
                     row_range = f"A{i+1}:J{i+1}"
                     self.sheet.format(row_range, {
@@ -262,11 +258,10 @@ class GoogleSheets:
             # Обновляем статус и время изменения
             update_time = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             
-            # Обновляем ячейки (колонки считаются с 1)
-            self.sheet.update_cell(row_index + 1, 9, status)  # Статус в колонке I (9)
-            self.sheet.update_cell(row_index + 1, 10, update_time)  # Время в колонке J (10)
+            self.sheet.update_cell(row_index + 1, 9, status)
+            self.sheet.update_cell(row_index + 1, 10, update_time)
             
-            # Применяем цвет в зависимости от статуса
+            # Применяем цвет
             color = self._get_status_color(status.lower())
             row_range = f"A{row_index + 1}:J{row_index + 1}"
             self.sheet.format(row_range, {
@@ -295,7 +290,7 @@ class GoogleSheets:
             result = []
             
             for i, record in enumerate(all_bookings):
-                if i == 0:  # Пропускаем заголовки
+                if i == 0:
                     continue
                 
                 if len(record) >= 9 and record[8].lower() == status.lower():

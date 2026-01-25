@@ -1,8 +1,5 @@
 """
-Централизованное управление данными с синхронизацией между:
-- Google Sheets (основное)
-- bookings_storage.json (для быстрого доступа)
-- Кеш в памяти для производительности
+Упрощенный StorageManager с поддержкой нового менеджера переносов
 """
 
 import json
@@ -24,6 +21,10 @@ class StorageManager:
         # Кеш в памяти для производительности
         self._bookings_cache = None
         self._users_cache = None
+        
+        # Инициализируем менеджер переносов
+        from reschedule_manager import RescheduleManager
+        self.reschedule_manager = RescheduleManager(self)
     
     def _ensure_data_dir(self):
         """Создает папку data если её нет"""
@@ -44,7 +45,7 @@ class StorageManager:
                     json.dump(default_data, f, ensure_ascii=False, indent=2)
                 print(f"✅ Создан файл {file_path}")
     
-    # === Методы для записей ===
+    # === Основные методы ===
     
     def add_booking(self, booking_data: Dict[str, Any]) -> str:
         """Добавляет запись во все хранилища"""
@@ -57,18 +58,19 @@ class StorageManager:
         if 'status' not in booking_data:
             booking_data['status'] = 'ожидает'
         
-        # 1. Сохраняем в локальное JSON хранилище
+        # Сохраняем в локальное JSON хранилище
         bookings = self._load_bookings()
         bookings[booking_id] = booking_data
         self._save_bookings(bookings)
         print(f"✅ Запись {booking_id[:8]}... сохранена в JSON")
         
-        # 2. Сохраняем в Google Sheets/CSV
+        # Сохраняем в Google Sheets/CSV
         if self.google_sheets:
             try:
                 # Удаляем служебные поля перед сохранением в Google Sheets
                 gs_data = booking_data.copy()
-                for field in ['booking_id', 'created_at', 'original_booking_id', 'master_proposed', 'old_status']:
+                for field in ['booking_id', 'created_at', 'original_booking_id', 
+                            'master_proposed', 'old_status', 'reschedule_type']:
                     gs_data.pop(field, None)
                 
                 self.google_sheets.add_booking(gs_data)
@@ -78,180 +80,6 @@ class StorageManager:
         
         return booking_id
     
-    def add_reschedule_request(self, original_booking_id: str, new_booking_data: Dict[str, Any]) -> str:
-        """Создает запрос на перенос записи"""
-        # 1. Обновляем статус оригинальной записи
-        original_updated = self.update_booking_status(
-            original_booking_id, 
-            'перенос (ожидание мастера)'
-        )
-        
-        if not original_updated:
-            print(f"❌ Не удалось обновить статус оригинальной записи {original_booking_id}")
-            return ""
-        
-        # 2. Создаем новую запись
-        new_booking_id = self.add_booking(new_booking_data)
-        
-        if not new_booking_id:
-            print("❌ Не удалось создать новую запись для переноса")
-            # Откатываем статус оригинальной записи
-            self.update_booking_status(original_booking_id, 'ожидает')
-            return ""
-        
-        # 3. Сохраняем связь между записями
-        bookings = self._load_bookings()
-        
-        if original_booking_id in bookings and new_booking_id in bookings:
-            # Добавляем ссылку на оригинальную запись
-            bookings[new_booking_id]['original_booking_id'] = original_booking_id
-            bookings[new_booking_id]['status'] = 'перенос (ожидание мастера)'
-            
-            # Добавляем ссылку на новую запись
-            bookings[original_booking_id]['rescheduled_to'] = new_booking_id
-            
-            self._save_bookings(bookings)
-            print(f"✅ Связь установлена: {original_booking_id[:8]}... -> {new_booking_id[:8]}...")
-            
-            # 4. Обновляем в Google Sheets/CSV
-            if self.google_sheets:
-                try:
-                    # Обновляем оригинальную запись
-                    original_booking = bookings[original_booking_id]
-                    gs_original_data = {
-                        'name': original_booking.get('name', ''),
-                        'date': original_booking.get('date', ''),
-                        'time': original_booking.get('time', ''),
-                        'phone': original_booking.get('phone', '')
-                    }
-                    self.google_sheets.add_status(gs_original_data, 'перенос (ожидание мастера)')
-                    
-                    # Обновляем новую запись
-                    new_booking = bookings[new_booking_id]
-                    gs_new_data = {
-                        'name': new_booking.get('name', ''),
-                        'date': new_booking.get('date', ''),
-                        'time': new_booking.get('time', ''),
-                        'phone': new_booking.get('phone', '')
-                    }
-                    self.google_sheets.add_status(gs_new_data, 'перенос (ожидание мастера)')
-                    
-                except Exception as e:
-                    print(f"⚠️ Ошибка обновления переноса в Google Sheets/CSV: {e}")
-        
-        return new_booking_id
-    
-    def confirm_reschedule(self, original_booking_id: str, new_booking_id: str) -> bool:
-        """Подтверждает перенос записи"""
-        bookings = self._load_bookings()
-        
-        if original_booking_id not in bookings or new_booking_id not in bookings:
-            print(f"❌ Не найдены записи для подтверждения переноса")
-            return False
-        
-        try:
-            # 1. Отменяем оригинальную запись
-            bookings[original_booking_id]['status'] = 'перенесена'
-            bookings[original_booking_id]['status_updated'] = datetime.now().isoformat()
-            
-            # 2. Подтверждаем новую запись
-            bookings[new_booking_id]['status'] = 'подтверждено'
-            bookings[new_booking_id]['status_updated'] = datetime.now().isoformat()
-            # Удаляем временную связь
-            if 'original_booking_id' in bookings[new_booking_id]:
-                del bookings[new_booking_id]['original_booking_id']
-            
-            self._save_bookings(bookings)
-            print(f"✅ Перенос подтвержден: {original_booking_id[:8]}... -> {new_booking_id[:8]}...")
-            
-            # 3. Обновляем в Google Sheets/CSV
-            if self.google_sheets:
-                # Обновляем оригинальную запись
-                original_booking = bookings[original_booking_id]
-                gs_original_data = {
-                    'name': original_booking.get('name', ''),
-                    'date': original_booking.get('date', ''),
-                    'time': original_booking.get('time', ''),
-                    'phone': original_booking.get('phone', '')
-                }
-                self.google_sheets.add_status(gs_original_data, 'перенесена')
-                
-                # Обновляем новую запись
-                new_booking = bookings[new_booking_id]
-                gs_new_data = {
-                    'name': new_booking.get('name', ''),
-                    'date': new_booking.get('date', ''),
-                    'time': new_booking.get('time', ''),
-                    'phone': new_booking.get('phone', '')
-                }
-                self.google_sheets.add_status(gs_new_data, 'подтверждено')
-            
-            return True
-            
-        except Exception as e:
-            print(f"❌ Ошибка подтверждения переноса: {e}")
-            return False
-    
-    def reject_reschedule(self, original_booking_id: str, new_booking_id: str) -> bool:
-        """Отклоняет перенос записи"""
-        bookings = self._load_bookings()
-        
-        if original_booking_id not in bookings or new_booking_id not in bookings:
-            print(f"❌ Не найдены записи для отклонения переноса")
-            return False
-        
-        try:
-            # 1. Возвращаем оригинальную запись в предыдущий статус
-            original_booking = bookings[original_booking_id]
-            old_status = original_booking.get('old_status', 'ожидает')
-            bookings[original_booking_id]['status'] = old_status
-            bookings[original_booking_id]['status_updated'] = datetime.now().isoformat()
-            
-            # Удаляем временное поле
-            if 'old_status' in bookings[original_booking_id]:
-                del bookings[original_booking_id]['old_status']
-            
-            # 2. Отклоняем новую запись
-            bookings[new_booking_id]['status'] = 'отклонено мастером'
-            bookings[new_booking_id]['status_updated'] = datetime.now().isoformat()
-            
-            # 3. Удаляем связи
-            if 'rescheduled_to' in bookings[original_booking_id]:
-                del bookings[original_booking_id]['rescheduled_to']
-            if 'original_booking_id' in bookings[new_booking_id]:
-                del bookings[new_booking_id]['original_booking_id']
-            
-            self._save_bookings(bookings)
-            print(f"✅ Перенос отклонен: {original_booking_id[:8]}...")
-            
-            # 4. Обновляем в Google Sheets/CSV
-            if self.google_sheets:
-                # Обновляем оригинальную запись
-                original_booking = bookings[original_booking_id]
-                gs_original_data = {
-                    'name': original_booking.get('name', ''),
-                    'date': original_booking.get('date', ''),
-                    'time': original_booking.get('time', ''),
-                    'phone': original_booking.get('phone', '')
-                }
-                self.google_sheets.add_status(gs_original_data, old_status)
-                
-                # Обновляем новую запись
-                new_booking = bookings[new_booking_id]
-                gs_new_data = {
-                    'name': new_booking.get('name', ''),
-                    'date': new_booking.get('date', ''),
-                    'time': new_booking.get('time', ''),
-                    'phone': new_booking.get('phone', '')
-                }
-                self.google_sheets.add_status(gs_new_data, 'отклонено мастером')
-            
-            return True
-            
-        except Exception as e:
-            print(f"❌ Ошибка отклонения переноса: {e}")
-            return False
-    
     def update_booking_status(self, booking_id: str, status: str, 
                              master_comment: str = None) -> bool:
         """Обновляет статус записи во всех хранилищах"""
@@ -260,14 +88,6 @@ class StorageManager:
         if booking_id not in bookings:
             print(f"❌ Запись {booking_id} не найдена в хранилище")
             return False
-        
-        # Сохраняем старый статус если это перенос и старый статус еще не сохранен
-        if status == 'перенос (ожидание мастера)' and 'old_status' not in bookings[booking_id]:
-            bookings[booking_id]['old_status'] = bookings[booking_id].get('status', 'ожидает')
-        
-        # Сохраняем старый статус если это перенос от мастера
-        if status == 'перенос (ожидание клиента)' and 'old_status' not in bookings[booking_id]:
-            bookings[booking_id]['old_status'] = bookings[booking_id].get('status', 'ожидает')
         
         # Обновляем в JSON хранилище
         old_status = bookings[booking_id].get('status')
@@ -327,98 +147,43 @@ class StorageManager:
         """Отменяет запись по ID"""
         return self.update_booking_status(booking_id, 'отменено')
     
-    # === Методы для переносов ===
+    # === Методы для работы с переносами (делегируем RescheduleManager) ===
     
-    def get_reschedule_requests(self) -> List[Dict]:
-        """Получает все запросы на перенос"""
-        bookings = self._load_bookings()
-        reschedule_requests = []
-        
-        for booking_id, booking in bookings.items():
-            if booking.get('status') == 'перенос (ожидание мастера)':
-                original_booking_id = booking.get('original_booking_id')
-                if original_booking_id and original_booking_id in bookings:
-                    original_booking = bookings[original_booking_id]
-                    
-                    reschedule_requests.append({
-                        'reschedule_id': booking_id,
-                        'original_booking_id': original_booking_id,
-                        'new_booking_id': booking_id,
-                        'client_name': booking.get('name', ''),
-                        'client_phone': booking.get('phone', ''),
-                        'old_date': original_booking.get('date', ''),
-                        'old_time': original_booking.get('time', ''),
-                        'new_date': booking.get('date', ''),
-                        'new_time': booking.get('time', ''),
-                        'service': booking.get('service', ''),
-                        'requested_at': booking.get('created_at', ''),
-                        'client_id': booking.get('telegram_id', ''),
-                        'client_username': booking.get('username', '')
-                    })
-        
-        # Сортировка по дате запроса
-        reschedule_requests.sort(key=lambda x: x.get('requested_at', ''), reverse=True)
-        
-        return reschedule_requests
+    def request_reschedule(self, original_booking_id: str, new_booking_data: Dict) -> tuple:
+        """Клиент запрашивает перенос записи"""
+        return self.reschedule_manager.request_reschedule(original_booking_id, new_booking_data)
+    
+    def offer_reschedule(self, original_booking_id: str, new_date: str, new_time: str) -> tuple:
+        """Мастер предлагает перенос записи"""
+        return self.reschedule_manager.offer_reschedule(original_booking_id, new_date, new_time)
+    
+    def accept_reschedule(self, reschedule_booking_id: str, accepted_by: str) -> tuple:
+        """Принимает перенос"""
+        return self.reschedule_manager.accept_reschedule(reschedule_booking_id, accepted_by)
+    
+    def reject_reschedule(self, reschedule_booking_id: str, rejected_by: str, reason: str = "") -> tuple:
+        """Отклоняет перенос"""
+        return self.reschedule_manager.reject_reschedule(reschedule_booking_id, rejected_by, reason)
+    
+    def cancel_reschedule_request(self, original_booking_id: str) -> tuple:
+        """Клиент отменяет свой запрос на перенос"""
+        return self.reschedule_manager.cancel_reschedule_request(original_booking_id)
     
     def get_reschedule_info(self, booking_id: str) -> Optional[Dict]:
-        """Получает информацию о переносе по ID записи"""
-        bookings = self._load_bookings()
-        
-        if booking_id not in bookings:
-            return None
-        
-        booking = bookings[booking_id]
-        
-        if booking.get('status') != 'перенос (ожидание мастера)':
-            return None
-        
-        original_booking_id = booking.get('original_booking_id')
-        if not original_booking_id or original_booking_id not in bookings:
-            return None
-        
-        original_booking = bookings[original_booking_id]
-        
-        return {
-            'reschedule_id': booking_id,
-            'original_booking_id': original_booking_id,
-            'new_booking_id': booking_id,
-            'client_name': booking.get('name', ''),
-            'client_phone': booking.get('phone', ''),
-            'old_date': original_booking.get('date', ''),
-            'old_time': original_booking.get('time', ''),
-            'new_date': booking.get('date', ''),
-            'new_time': booking.get('time', ''),
-            'service': booking.get('service', ''),
-            'requested_at': booking.get('created_at', ''),
-            'client_id': booking.get('telegram_id', ''),
-            'client_username': booking.get('username', '')
-        }
+        """Получает информацию о переносе"""
+        return self.reschedule_manager.get_reschedule_info(booking_id)
+    
+    def get_reschedule_requests(self) -> List[Dict]:
+        """Получает все активные запросы на перенос"""
+        return self.reschedule_manager.get_active_reschedules('client_requested')
+    
+    def get_reschedule_offers(self) -> List[Dict]:
+        """Получает все активные предложения переноса"""
+        return self.reschedule_manager.get_active_reschedules('master_offered')
     
     def get_reschedule_requests_count(self) -> int:
-        """Получает количество запросов на перенос"""
+        """Получает количество запросы на перенос"""
         return len(self.get_reschedule_requests())
-    
-    def get_master_proposed_bookings(self) -> List[Dict]:
-        """Получает записи, предложенные мастером для переноса"""
-        bookings = self._load_bookings()
-        
-        result = []
-        for booking_id, booking in bookings.items():
-            if (booking.get('status') == 'перенос (ожидание клиента)' and 
-                booking.get('master_proposed')):
-                result.append({
-                    'booking_id': booking_id,
-                    **booking
-                })
-        
-        # Сортировка по дате
-        result.sort(key=lambda x: (
-            x.get('date', ''),
-            x.get('time', '')
-        ))
-        
-        return result
     
     # === Методы для пользователей ===
     
@@ -439,6 +204,50 @@ class StorageManager:
         users = self._load_users()
         user_data = users.get(str(telegram_id))
         return user_data.get('phone') if user_data else None
+    
+    # === Методы для мастера ===
+    
+    def get_bookings_by_status(self, status: str) -> List[Dict]:
+        """Получает записи по статусу"""
+        bookings = self._load_bookings()
+        
+        result = []
+        for booking_id, booking in bookings.items():
+            if booking.get('status') == status:
+                result.append({
+                    'booking_id': booking_id,
+                    **booking
+                })
+        
+        # Сортировка по дате
+        result.sort(key=lambda x: (
+            x.get('date', ''),
+            x.get('time', '')
+        ))
+        
+        return result
+    
+    def get_statistics(self) -> Dict[str, int]:
+        """Возвращает статистику записей"""
+        bookings = self._load_bookings()
+        
+        stats = {
+            'total': len(bookings),
+            'ожидает': 0,
+            'подтверждено': 0,
+            'выполнено': 0,
+            'запрос переноса': 0,
+            'предложение переноса': 0,
+            'отклонено': 0,
+            'отменено': 0
+        }
+        
+        for booking in bookings.values():
+            status = booking.get('status')
+            if status in stats:
+                stats[status] += 1
+        
+        return stats
     
     # === Вспомогательные методы ===
     
@@ -483,61 +292,3 @@ class StorageManager:
             json.dump(data, f, ensure_ascii=False, indent=2)
         
         self._users_cache = data
-    
-    # === Методы для мастера ===
-    
-    def get_bookings_by_status(self, status: str) -> List[Dict]:
-        """Получает записи по статусу"""
-        bookings = self._load_bookings()
-        
-        result = []
-        for booking_id, booking in bookings.items():
-            if booking.get('status') == status:
-                result.append({
-                    'booking_id': booking_id,
-                    **booking
-                })
-        
-        # Сортировка по дате
-        result.sort(key=lambda x: (
-            x.get('date', ''),
-            x.get('time', '')
-        ))
-        
-        return result
-    
-    def get_statistics(self) -> Dict[str, int]:
-        """Возвращает статистику записей"""
-        bookings = self._load_bookings()
-        
-        stats = {
-            'total': len(bookings),
-            'ожидает': 0,
-            'подтверждено': 0,
-            'выполнено': 0,
-            'перенос (ожидание мастера)': 0,
-            'перенос (ожидание клиента)': 0,
-            'перенесена': 0,
-            'отклонено мастером': 0,
-            'отменено': 0
-        }
-        
-        for booking in bookings.values():
-            status = booking.get('status')
-            if status in stats:
-                stats[status] += 1
-        
-        return stats
-    
-    def find_booking_by_row_index(self, row_index: int) -> Optional[Dict]:
-        """Находит запись по индексу строки (для совместимости со старым кодом)"""
-        bookings = self._load_bookings()
-        
-        # Преобразуем в список для доступа по индексу
-        bookings_list = list(bookings.items())
-        
-        if 0 <= row_index < len(bookings_list):
-            booking_id, booking = bookings_list[row_index]
-            return {'booking_id': booking_id, **booking}
-        
-        return None

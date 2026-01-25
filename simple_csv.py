@@ -15,7 +15,6 @@ class SimpleCSVManager:
         if not os.path.exists(self.filename):
             with open(self.filename, 'w', newline='', encoding='utf-8') as file:
                 writer = csv.writer(file)
-                # Добавляем заголовки для статусов
                 headers = list(COLUMNS.values())
                 writer.writerow(headers)
             print(f"✅ Создан файл {self.filename}")
@@ -34,8 +33,8 @@ class SimpleCSVManager:
                 booking_data.get('service', ''),
                 booking_data.get('telegram_id', ''),
                 booking_data.get('username', ''),
-                booking_data.get('status', 'ожидает'),  # Статус из данных
-                ''  # Время изменения статуса
+                booking_data.get('status', 'ожидает'),
+                ''
             ]
             
             with open(self.filename, 'a', newline='', encoding='utf-8') as file:
@@ -51,36 +50,31 @@ class SimpleCSVManager:
     def add_status(self, booking_data, status):
         """Обновляет статус записи в CSV"""
         try:
-            # Читаем все записи
             rows = []
             with open(self.filename, 'r', newline='', encoding='utf-8') as file:
                 reader = csv.reader(file)
                 rows = list(reader)
             
-            # Ищем запись для обновления
             updated = False
             for i, row in enumerate(rows):
                 if i == 0:
-                    continue  # Пропускаем заголовки
+                    continue
                 
-                # Проверяем по нескольким параметрам (упрощенная логика)
                 if (len(row) >= 8 and 
                     row[1] == booking_data.get('name') and
                     row[3] == booking_data.get('date') and
                     row[4] == booking_data.get('time')):
                     
-                    # Обновляем статус
                     if len(row) >= 9:
-                        row[8] = status  # Статус
+                        row[8] = status
                     if len(row) >= 10:
-                        row[9] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')  # Время обновления
+                        row[9] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                     
                     updated = True
                     print(f"✅ Статус обновлен в строке {i}: {status}")
                     break
             
             if updated:
-                # Записываем обновленные данные обратно
                 with open(self.filename, 'w', newline='', encoding='utf-8') as file:
                     writer = csv.writer(file)
                     writer.writerows(rows)
@@ -101,14 +95,12 @@ class SimpleCSVManager:
                 reader = csv.reader(file)
                 rows = list(reader)
             
-            if 1 <= row_index < len(rows):  # Пропускаем заголовки
-                # Обновляем статус
+            if 1 <= row_index < len(rows):
                 if len(rows[row_index]) >= 9:
-                    rows[row_index][8] = status  # Статус
+                    rows[row_index][8] = status
                 if len(rows[row_index]) >= 10:
-                    rows[row_index][9] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')  # Время обновления
+                    rows[row_index][9] = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
                 
-                # Записываем обновленные данные
                 with open(self.filename, 'w', newline='', encoding='utf-8') as file:
                     writer = csv.writer(file)
                     writer.writerows(rows)
@@ -132,4 +124,29 @@ class SimpleCSVManager:
             return rows
         except Exception as e:
             print(f"❌ Ошибка получения записей из CSV: {e}")
+            return []
+    
+    def get_bookings_by_status(self, status):
+        """Получает записи по статусу"""
+        try:
+            all_bookings = self.sheet.get_all_values()
+            result = []
+            
+            for i, record in enumerate(all_bookings):
+                if i == 0:
+                    continue
+                
+                if len(record) >= 9 and record[8].lower() == status.lower():
+                    result.append({
+                        'row': i + 1,
+                        'data': record,
+                        'name': record[1] if len(record) > 1 else '',
+                        'date': record[3] if len(record) > 3 else '',
+                        'time': record[4] if len(record) > 4 else '',
+                        'status': record[8] if len(record) > 8 else ''
+                    })
+            
+            return result
+        except Exception as e:
+            print(f"❌ Ошибка получения записей по статусу: {e}")
             return []

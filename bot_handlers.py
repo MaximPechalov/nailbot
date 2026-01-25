@@ -1,4 +1,8 @@
-from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove
+"""
+Основные обработчики команд для клиентов
+"""
+
+from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from datetime import datetime, timedelta
 import re
@@ -236,6 +240,15 @@ class BookingHandlers:
                 if 1 <= booking_number <= len(user_bookings):
                     selected_booking = user_bookings[booking_number - 1]
                     
+                    # Проверяем, не находится ли запись уже в процессе переноса
+                    if selected_booking.get('status') == 'запрос переноса':
+                        await update.message.reply_text(
+                            "⚠️ Эта запись уже находится в процессе переноса.\n"
+                            "Дождитесь ответа мастера или отмените текущий запрос.",
+                            reply_markup=self._get_main_menu()
+                        )
+                        return ConversationHandler.END
+                    
                     context.user_data['booking_to_reschedule'] = selected_booking
                     context.user_data['booking_number'] = booking_number
                     
@@ -353,11 +366,10 @@ class BookingHandlers:
 Время: {new_time}
 Услуга: {booking.get('service', '')}
 
-⚠️ После подтверждения:
-• Будет создана новая запись со статусом "ожидает"
-• Текущая запись перейдет в статус "перенос (ожидание мастера)"
-• Мастер получит уведомление о запросе переноса
-• После подтверждения мастера старая запись будет отменена
+После подтверждения:
+• Будет создан запрос на перенос
+• Мастер получит уведомление
+• Ожидайте подтверждения мастера
 
 Всё верно?
 """
@@ -384,6 +396,7 @@ class BookingHandlers:
                 return ConversationHandler.END
             
             try:
+                # Используем новый централизованный менеджер
                 new_booking_data = {
                     'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                     'name': booking.get('name', ''),
@@ -392,17 +405,16 @@ class BookingHandlers:
                     'time': new_time,
                     'service': booking.get('service', ''),
                     'telegram_id': update.effective_user.id,
-                    'username': update.effective_user.username or '',
-                    'status': 'перенос (ожидание мастера)',
-                    'original_booking_id': booking_id
+                    'username': update.effective_user.username or ''
                 }
                 
-                new_booking_id = self.storage.add_reschedule_request(
+                success, new_booking_id, error_message = self.storage.request_reschedule(
                     booking_id, 
                     new_booking_data
                 )
                 
-                if new_booking_id:
+                if success:
+                    # Уведомляем мастера
                     await self.notifications.notify_master_reschedule_request(
                         booking, 
                         new_booking_data, 
@@ -419,11 +431,9 @@ class BookingHandlers:
 
 ⏳ Ожидайте подтверждения мастера.
 Мастер получил уведомление и скоро ответит.
-
-Вы получите уведомление как только мастер примет решение.
 """
                 else:
-                    message = "❌ Не удалось создать запрос на перенос. Попробуйте позже."
+                    message = f"❌ Не удалось создать запрос на перенос. {error_message}"
                     
             except Exception as e:
                 print(f"❌ Ошибка при переносе записи: {e}")
@@ -436,6 +446,7 @@ class BookingHandlers:
             reply_markup=self._get_main_menu()
         )
         
+        # Очищаем контекст
         for key in ['my_bookings', 'booking_to_reschedule', 'booking_number', 
                    'new_date', 'new_time']:
             if key in context.user_data:
@@ -448,9 +459,10 @@ class BookingHandlers:
         user_id = update.effective_user.id
         
         try:
+            # Получаем активные записи и запросы переноса
             user_bookings = self.storage.get_user_bookings(
                 user_id, 
-                status_filter=['ожидает', 'подтверждено']
+                status_filter=['ожидает', 'подтверждено', 'запрос переноса', 'предложение переноса']
             )
             
             if user_bookings:
@@ -462,21 +474,35 @@ class BookingHandlers:
                 for i, booking in enumerate(user_bookings, 1):
                     status_emoji = {
                         'ожидает': '⏳',
-                        'подтверждено': '✅'
+                        'подтверждено': '✅',
+                        'запрос переноса': '🔄',
+                        'предложение переноса': '📨'
                     }.get(booking['status'], '📌')
                     
                     message += f"{i}. {status_emoji} {booking['date']} в {booking['time']}\n"
                     message += f"   Услуга: {booking['service']}\n"
                     message += f"   Статус: {booking['status']}\n\n"
                     
-                    btn_text = f"❌ Отменить запись {i}"
+                    # Разные кнопки в зависимости от статуса
+                    if booking['status'] == 'запрос переноса':
+                        btn_text = f"❌ Отменить запрос переноса {i}"
+                    elif booking['status'] == 'предложение переноса':
+                        # Для предложений мастера нужны две кнопки
+                        keyboard.append([
+                            f"✅ Принять предложение {i}",
+                            f"❌ Отклонить предложение {i}"
+                        ])
+                        continue
+                    else:
+                        btn_text = f"❌ Отменить запись {i}"
+                    
                     keyboard.append([btn_text])
                 
                 keyboard.append(['🔙 Назад в меню'])
                 
                 reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
                 
-                message += "Выберите запись для отмены или вернитесь в меню:"
+                message += "Выберите действие или вернитесь в меню:"
                 await update.message.reply_text(message, reply_markup=reply_markup)
                 
                 return 6  # CANCEL_SELECT
@@ -507,13 +533,129 @@ class BookingHandlers:
             )
             return ConversationHandler.END
         
-        if '❌ Отменить запись' in user_input:
+        # Обработка предложений мастера
+        if 'Принять предложение' in user_input:
             try:
                 booking_number = int(user_input.split(' ')[-1])
                 user_bookings = context.user_data.get('my_bookings', [])
                 
                 if 1 <= booking_number <= len(user_bookings):
                     selected_booking = user_bookings[booking_number - 1]
+                    
+                    if selected_booking.get('status') != 'предложение переноса':
+                        await update.message.reply_text(
+                            "❌ Это не предложение переноса.",
+                            reply_markup=self._get_main_menu()
+                        )
+                        return ConversationHandler.END
+                    
+                    # Принимаем предложение
+                    success, message = self.storage.accept_reschedule(
+                        selected_booking['booking_id'], 
+                        'client'
+                    )
+                    
+                    if success:
+                        await self.notifications.notify_master_client_decision(
+                            selected_booking['booking_id'], 'accept', 
+                            selected_booking.get('name'), 
+                            selected_booking.get('date'), selected_booking.get('time')
+                        )
+                    
+                    await update.message.reply_text(
+                        message,
+                        reply_markup=self._get_main_menu()
+                    )
+                    return ConversationHandler.END
+                    
+            except (ValueError, IndexError) as e:
+                print(f"❌ Ошибка обработки предложения: {e}")
+        
+        elif 'Отклонить предложение' in user_input:
+            try:
+                booking_number = int(user_input.split(' ')[-1])
+                user_bookings = context.user_data.get('my_bookings', [])
+                
+                if 1 <= booking_number <= len(user_bookings):
+                    selected_booking = user_bookings[booking_number - 1]
+                    
+                    if selected_booking.get('status') != 'предложение переноса':
+                        await update.message.reply_text(
+                            "❌ Это не предложение переноса.",
+                            reply_markup=self._get_main_menu()
+                        )
+                        return ConversationHandler.END
+                    
+                    # Отклоняем предложение
+                    success, message = self.storage.reject_reschedule(
+                        selected_booking['booking_id'], 
+                        'client',
+                        "Клиент отказался от предложения"
+                    )
+                    
+                    if success:
+                        await self.notifications.notify_master_client_decision(
+                            selected_booking['booking_id'], 'reject', 
+                            selected_booking.get('name'), 
+                            selected_booking.get('date'), selected_booking.get('time')
+                        )
+                    
+                    await update.message.reply_text(
+                        message,
+                        reply_markup=self._get_main_menu()
+                    )
+                    return ConversationHandler.END
+                    
+            except (ValueError, IndexError) as e:
+                print(f"❌ Ошибка обработки предложения: {e}")
+        
+        # Обработка отмены запросов переноса
+        elif 'Отменить запрос переноса' in user_input:
+            try:
+                booking_number = int(user_input.split(' ')[-1])
+                user_bookings = context.user_data.get('my_bookings', [])
+                
+                if 1 <= booking_number <= len(user_bookings):
+                    selected_booking = user_bookings[booking_number - 1]
+                    
+                    if selected_booking.get('status') != 'запрос переноса':
+                        await update.message.reply_text(
+                            "❌ Это не запрос переноса.",
+                            reply_markup=self._get_main_menu()
+                        )
+                        return ConversationHandler.END
+                    
+                    # Отменяем запрос переноса
+                    success, message = self.storage.cancel_reschedule_request(
+                        selected_booking.get('original_booking_id', selected_booking['booking_id'])
+                    )
+                    
+                    await update.message.reply_text(
+                        message,
+                        reply_markup=self._get_main_menu()
+                    )
+                    return ConversationHandler.END
+                    
+            except (ValueError, IndexError) as e:
+                print(f"❌ Ошибка обработки отмены запроса: {e}")
+        
+        # Обработка обычной отмены записи
+        elif '❌ Отменить запись' in user_input:
+            try:
+                booking_number = int(user_input.split(' ')[-1])
+                user_bookings = context.user_data.get('my_bookings', [])
+                
+                if 1 <= booking_number <= len(user_bookings):
+                    selected_booking = user_bookings[booking_number - 1]
+                    
+                    # Нельзя отменить запись, которая в процессе переноса
+                    if selected_booking.get('status') in ['запрос переноса', 'предложение переноса']:
+                        await update.message.reply_text(
+                            f"❌ Нельзя отменить запись со статусом '{selected_booking.get('status')}'.\n"
+                            f"Используйте специальные кнопки для работы с переносами.",
+                            reply_markup=self._get_main_menu()
+                        )
+                        return ConversationHandler.END
                     
                     context.user_data['booking_to_cancel'] = selected_booking
                     context.user_data['booking_number'] = booking_number
@@ -525,11 +667,6 @@ class BookingHandlers:
 ⏰ Время: {selected_booking['time']}
 💅 Услуга: {selected_booking['service']}
 📊 Статус: {selected_booking['status']}
-
-⚠️ Отмена записи:
-• Запись будет помечена как отмененная
-• Время станет доступно для других клиентов
-• Мастер получит уведомление об отмене
 """
                     
                     keyboard = [
@@ -545,7 +682,7 @@ class BookingHandlers:
                 print(f"❌ Ошибка обработки выбора записи: {e}")
         
         await update.message.reply_text(
-            "Пожалуйста, выберите запись из списка ниже:",
+            "Пожалуйста, выберите действие из списка ниже:",
             reply_markup=self._get_main_menu()
         )
         return ConversationHandler.END
@@ -592,12 +729,10 @@ class BookingHandlers:
             reply_markup=self._get_main_menu()
         )
         
-        if 'my_bookings' in context.user_data:
-            del context.user_data['my_bookings']
-        if 'booking_to_cancel' in context.user_data:
-            del context.user_data['booking_to_cancel']
-        if 'booking_number' in context.user_data:
-            del context.user_data['booking_number']
+        # Очищаем контекст
+        for key in ['my_bookings', 'booking_to_cancel', 'booking_number']:
+            if key in context.user_data:
+                del context.user_data[key]
         
         return ConversationHandler.END
     
