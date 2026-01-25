@@ -23,7 +23,9 @@ def main():
     from storage_manager import StorageManager
     from notification_service import NotificationService
     from master_panel import MasterPanel
-    from bot_handlers import BookingHandlers, NAME, PHONE, DATE, TIME, SERVICE, CONFIRM, CANCEL_SELECT, CANCEL_CONFIRM
+    
+    # Импортируем BookingHandlers и все состояния отдельно
+    from bot_handlers import BookingHandlers
     
     storage_manager = StorageManager(google_sheets)
     notification_service = NotificationService(storage_manager)
@@ -31,6 +33,15 @@ def main():
     
     # BookingHandlers теперь использует storage_manager вместо google_sheets напрямую
     booking_handlers = BookingHandlers(storage_manager, notification_service)
+    
+    # Определяем состояния для ConversationHandler (теперь здесь)
+    # ДОЛЖНО БЫТЬ 13 ЗНАЧЕНИЙ ДЛЯ range(13)
+    (
+        NAME, PHONE, DATE, TIME, SERVICE, CONFIRM, 
+        CANCEL_SELECT, CANCEL_CONFIRM,
+        RESCHEDULE_SELECT, RESCHEDULE_DATE, RESCHEDULE_TIME, RESCHEDULE_CONFIRM,
+        WAITING_RESCHEDULE_DATE  # ДОБАВИЛИ 13-й элемент
+    ) = range(13)
     
     # Создаем приложение
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -87,21 +98,62 @@ def main():
         ]
     )
     
+    # === ОТДЕЛЬНЫЙ ConversationHandler для переноса записей ===
+    reschedule_conv_handler = ConversationHandler(
+        entry_points=[
+            MessageHandler(filters.Regex('^🔄 Перенести запись$'), 
+                          booking_handlers.start_reschedule)
+        ],
+        states={
+            RESCHEDULE_SELECT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, 
+                              booking_handlers.select_booking_to_reschedule)
+            ],
+            RESCHEDULE_DATE: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, 
+                              booking_handlers.get_reschedule_date)
+            ],
+            RESCHEDULE_TIME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, 
+                              booking_handlers.get_reschedule_time)
+            ],
+            RESCHEDULE_CONFIRM: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, 
+                              booking_handlers.confirm_reschedule)
+            ],
+        },
+        fallbacks=[
+            CommandHandler('cancel', booking_handlers.cancel),
+            CommandHandler('start', booking_handlers.start),
+            MessageHandler(filters.Regex('^🔙 Назад в меню$'), 
+                          lambda update, context: booking_handlers.cancel(update, context))
+        ]
+    )
+    
     # === Добавляем обработчики в правильном порядке ===
     
-    # 1. Обработчик callback-кнопок мастера
+    # 1. Обработчик callback-кнопок мастера (включая переносы)
     application.add_handler(CallbackQueryHandler(
         master_panel.handle_callback,
-        pattern="^(action_|view_|menu_)"
+        pattern="^(action_|reschedule_|view_|menu_)"
     ))
     
-    # 2. ConversationHandler для отмены записей
+    # 2. Обработчик callback-кнопок клиента для переносов
+    application.add_handler(CallbackQueryHandler(
+        master_panel.handle_callback,
+        pattern="^reschedule_client_"
+    ))
+    
+    # 3. ConversationHandler для переноса записей
+    application.add_handler(reschedule_conv_handler)
+    
+    # 4. ConversationHandler для отмены записей
     application.add_handler(cancel_conv_handler)
     
-    # 3. ConversationHandler для создания записи
+    # 5. ConversationHandler для создания записи
     application.add_handler(booking_conv_handler)
     
-    # 4. Команда для меню мастера
+    # 6. Команда для меню мастера
     async def send_master_menu(update, context):
         """Команда для отправки меню мастера"""
         if str(update.effective_chat.id) != MASTER_CHAT_ID:
@@ -112,22 +164,22 @@ def main():
     
     application.add_handler(CommandHandler("master", send_master_menu))
     
-    # 5. Обработчик команды /start
+    # 7. Обработчик команды /start
     application.add_handler(CommandHandler("start", booking_handlers.start))
     
-    # 6. Обработчик главного меню (только информационные кнопки)
+    # 8. Обработчик главного меню (только информационные кнопки)
     application.add_handler(MessageHandler(
         filters.Regex('^(ℹ️ О нас|📞 Контакты|👨‍💻 Поддержка)$'), 
         booking_handlers.handle_main_menu
     ))
     
-    # 7. Обработчик неизвестных команд
+    # 9. Обработчик неизвестных команд
     application.add_handler(MessageHandler(
         filters.COMMAND, 
         booking_handlers.handle_unknown
     ))
     
-    # 8. Запасной обработчик для любых других сообщений
+    # 10. Запасной обработчик для любых других сообщений
     application.add_handler(MessageHandler(
         filters.TEXT, 
         booking_handlers.handle_unknown
@@ -153,6 +205,7 @@ def main():
     print("📱 Перейдите в Telegram и найдите вашего бота")
     print("👑 Мастер получит уведомления и меню управления")
     print("💼 Команда /master - открыть панель управления")
+    print("🔄 Доступен функционал переноса записей")
     
     # Проверяем, что MASTER_CHAT_ID установлен
     if not MASTER_CHAT_ID or MASTER_CHAT_ID == "ваш_chat_id_здесь":

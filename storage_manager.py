@@ -79,6 +79,177 @@ class StorageManager:
         
         return booking_id
     
+    def add_reschedule_request(self, original_booking_id: str, new_booking_data: Dict[str, Any]) -> str:
+        """Создает запрос на перенос записи"""
+        # 1. Обновляем статус оригинальной записи
+        original_updated = self.update_booking_status(
+            original_booking_id, 
+            'перенос (ожидание мастера)'
+        )
+        
+        if not original_updated:
+            print(f"❌ Не удалось обновить статус оригинальной записи {original_booking_id}")
+            return ""
+        
+        # 2. Создаем новую запись
+        new_booking_id = self.add_booking(new_booking_data)
+        
+        if not new_booking_id:
+            print("❌ Не удалось создать новую запись для переноса")
+            # Откатываем статус оригинальной записи
+            self.update_booking_status(original_booking_id, 'ожидает')
+            return ""
+        
+        # 3. Сохраняем связь между записями
+        bookings = self._load_bookings()
+        
+        if original_booking_id in bookings and new_booking_id in bookings:
+            # Добавляем ссылку на оригинальную запись
+            bookings[new_booking_id]['original_booking_id'] = original_booking_id
+            bookings[new_booking_id]['status'] = 'перенос (ожидание мастера)'
+            
+            # Добавляем ссылку на новую запись
+            bookings[original_booking_id]['rescheduled_to'] = new_booking_id
+            
+            self._save_bookings(bookings)
+            print(f"✅ Связь установлена: {original_booking_id[:8]}... -> {new_booking_id[:8]}...")
+            
+            # 4. Обновляем в Google Sheets/CSV
+            if self.google_sheets:
+                try:
+                    # Обновляем оригинальную запись
+                    original_booking = bookings[original_booking_id]
+                    gs_original_data = {
+                        'name': original_booking.get('name', ''),
+                        'date': original_booking.get('date', ''),
+                        'time': original_booking.get('time', ''),
+                        'phone': original_booking.get('phone', '')
+                    }
+                    self.google_sheets.add_status(gs_original_data, 'перенос (ожидание мастера)')
+                    
+                    # Обновляем новую запись
+                    new_booking = bookings[new_booking_id]
+                    gs_new_data = {
+                        'name': new_booking.get('name', ''),
+                        'date': new_booking.get('date', ''),
+                        'time': new_booking.get('time', ''),
+                        'phone': new_booking.get('phone', '')
+                    }
+                    self.google_sheets.add_status(gs_new_data, 'перенос (ожидание мастера)')
+                    
+                except Exception as e:
+                    print(f"⚠️ Ошибка обновления переноса в Google Sheets/CSV: {e}")
+        
+        return new_booking_id
+    
+    def confirm_reschedule(self, original_booking_id: str, new_booking_id: str) -> bool:
+        """Подтверждает перенос записи"""
+        bookings = self._load_bookings()
+        
+        if original_booking_id not in bookings or new_booking_id not in bookings:
+            print(f"❌ Не найдены записи для подтверждения переноса")
+            return False
+        
+        try:
+            # 1. Отменяем оригинальную запись
+            bookings[original_booking_id]['status'] = 'перенесена'
+            bookings[original_booking_id]['status_updated'] = datetime.now().isoformat()
+            
+            # 2. Подтверждаем новую запись
+            bookings[new_booking_id]['status'] = 'подтверждено'
+            bookings[new_booking_id]['status_updated'] = datetime.now().isoformat()
+            # Удаляем временную связь
+            if 'original_booking_id' in bookings[new_booking_id]:
+                del bookings[new_booking_id]['original_booking_id']
+            
+            self._save_bookings(bookings)
+            print(f"✅ Перенос подтвержден: {original_booking_id[:8]}... -> {new_booking_id[:8]}...")
+            
+            # 3. Обновляем в Google Sheets/CSV
+            if self.google_sheets:
+                # Обновляем оригинальную запись
+                original_booking = bookings[original_booking_id]
+                gs_original_data = {
+                    'name': original_booking.get('name', ''),
+                    'date': original_booking.get('date', ''),
+                    'time': original_booking.get('time', ''),
+                    'phone': original_booking.get('phone', '')
+                }
+                self.google_sheets.add_status(gs_original_data, 'перенесена')
+                
+                # Обновляем новую запись
+                new_booking = bookings[new_booking_id]
+                gs_new_data = {
+                    'name': new_booking.get('name', ''),
+                    'date': new_booking.get('date', ''),
+                    'time': new_booking.get('time', ''),
+                    'phone': new_booking.get('phone', '')
+                }
+                self.google_sheets.add_status(gs_new_data, 'подтверждено')
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ Ошибка подтверждения переноса: {e}")
+            return False
+    
+    def reject_reschedule(self, original_booking_id: str, new_booking_id: str) -> bool:
+        """Отклоняет перенос записи"""
+        bookings = self._load_bookings()
+        
+        if original_booking_id not in bookings or new_booking_id not in bookings:
+            print(f"❌ Не найдены записи для отклонения переноса")
+            return False
+        
+        try:
+            # 1. Возвращаем оригинальную запись в предыдущий статус
+            # Определяем предыдущий статус
+            original_booking = bookings[original_booking_id]
+            old_status = original_booking.get('old_status', 'ожидает')
+            bookings[original_booking_id]['status'] = old_status
+            bookings[original_booking_id]['status_updated'] = datetime.now().isoformat()
+            
+            # 2. Удаляем новую запись (или отмечаем как отклоненную)
+            bookings[new_booking_id]['status'] = 'отклонено мастером'
+            bookings[new_booking_id]['status_updated'] = datetime.now().isoformat()
+            
+            # 3. Удаляем связи
+            if 'rescheduled_to' in bookings[original_booking_id]:
+                del bookings[original_booking_id]['rescheduled_to']
+            if 'original_booking_id' in bookings[new_booking_id]:
+                del bookings[new_booking_id]['original_booking_id']
+            
+            self._save_bookings(bookings)
+            print(f"✅ Перенос отклонен: {original_booking_id[:8]}...")
+            
+            # 4. Обновляем в Google Sheets/CSV
+            if self.google_sheets:
+                # Обновляем оригинальную запись
+                original_booking = bookings[original_booking_id]
+                gs_original_data = {
+                    'name': original_booking.get('name', ''),
+                    'date': original_booking.get('date', ''),
+                    'time': original_booking.get('time', ''),
+                    'phone': original_booking.get('phone', '')
+                }
+                self.google_sheets.add_status(gs_original_data, old_status)
+                
+                # Обновляем новую запись
+                new_booking = bookings[new_booking_id]
+                gs_new_data = {
+                    'name': new_booking.get('name', ''),
+                    'date': new_booking.get('date', ''),
+                    'time': new_booking.get('time', ''),
+                    'phone': new_booking.get('phone', '')
+                }
+                self.google_sheets.add_status(gs_new_data, 'отклонено мастером')
+            
+            return True
+            
+        except Exception as e:
+            print(f"❌ Ошибка отклонения переноса: {e}")
+            return False
+    
     def update_booking_status(self, booking_id: str, status: str, 
                              master_comment: str = None) -> bool:
         """Обновляет статус записи во всех хранилищах"""
@@ -87,6 +258,10 @@ class StorageManager:
         if booking_id not in bookings:
             print(f"❌ Запись {booking_id} не найдена в хранилище")
             return False
+        
+        # Сохраняем старый статус если это перенос
+        if status == 'перенос (ожидание мастера)':
+            bookings[booking_id]['old_status'] = bookings[booking_id].get('status', 'ожидает')
         
         # Обновляем в JSON хранилище
         bookings[booking_id]['status'] = status
@@ -144,6 +319,78 @@ class StorageManager:
     def cancel_booking_by_id(self, booking_id: str) -> bool:
         """Отменяет запись по ID"""
         return self.update_booking_status(booking_id, 'отменено')
+    
+    # === Методы для переносов ===
+    
+    def get_reschedule_requests(self) -> List[Dict]:
+        """Получает все запросы на перенос"""
+        bookings = self._load_bookings()
+        reschedule_requests = []
+        
+        for booking_id, booking in bookings.items():
+            if booking.get('status') == 'перенос (ожидание мастера)':
+                original_booking_id = booking.get('original_booking_id')
+                if original_booking_id and original_booking_id in bookings:
+                    original_booking = bookings[original_booking_id]
+                    
+                    reschedule_requests.append({
+                        'reschedule_id': booking_id,
+                        'original_booking_id': original_booking_id,
+                        'new_booking_id': booking_id,
+                        'client_name': booking.get('name', ''),
+                        'client_phone': booking.get('phone', ''),
+                        'old_date': original_booking.get('date', ''),
+                        'old_time': original_booking.get('time', ''),
+                        'new_date': booking.get('date', ''),
+                        'new_time': booking.get('time', ''),
+                        'service': booking.get('service', ''),
+                        'requested_at': booking.get('created_at', ''),
+                        'client_id': booking.get('telegram_id', ''),
+                        'client_username': booking.get('username', '')
+                    })
+        
+        # Сортировка по дате запроса
+        reschedule_requests.sort(key=lambda x: x.get('requested_at', ''), reverse=True)
+        
+        return reschedule_requests
+    
+    def get_reschedule_info(self, booking_id: str) -> Optional[Dict]:
+        """Получает информацию о переносе по ID записи"""
+        bookings = self._load_bookings()
+        
+        if booking_id not in bookings:
+            return None
+        
+        booking = bookings[booking_id]
+        
+        if booking.get('status') != 'перенос (ожидание мастера)':
+            return None
+        
+        original_booking_id = booking.get('original_booking_id')
+        if not original_booking_id or original_booking_id not in bookings:
+            return None
+        
+        original_booking = bookings[original_booking_id]
+        
+        return {
+            'reschedule_id': booking_id,
+            'original_booking_id': original_booking_id,
+            'new_booking_id': booking_id,
+            'client_name': booking.get('name', ''),
+            'client_phone': booking.get('phone', ''),
+            'old_date': original_booking.get('date', ''),
+            'old_time': original_booking.get('time', ''),
+            'new_date': booking.get('date', ''),
+            'new_time': booking.get('time', ''),
+            'service': booking.get('service', ''),
+            'requested_at': booking.get('created_at', ''),
+            'client_id': booking.get('telegram_id', ''),
+            'client_username': booking.get('username', '')
+        }
+    
+    def get_reschedule_requests_count(self) -> int:
+        """Получает количество запросов на перенос"""
+        return len(self.get_reschedule_requests())
     
     # === Методы для пользователей ===
     
@@ -240,6 +487,9 @@ class StorageManager:
             'ожидает': 0,
             'подтверждено': 0,
             'выполнено': 0,
+            'перенос (ожидание мастера)': 0,
+            'перенос (ожидание клиента)': 0,
+            'перенесена': 0,
             'отклонено мастером': 0,
             'отменено': 0
         }
