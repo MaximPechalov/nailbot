@@ -1,5 +1,5 @@
 """
-Основной файл - обновлен для новой логики меню
+Основной файл - обновлен для поддержки напоминаний
 """
 
 from telegram import Update
@@ -15,7 +15,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-def main():
+async def main():
     print("🤖 Бот запускается...")
     
     # Инициализация хранилища
@@ -32,7 +32,8 @@ def main():
     from storage_manager import StorageManager
     from notification_service import NotificationService
     from master_panel import MasterPanel
-    from availability_manager import AvailabilityManager  # <-- Добавить
+    from availability_manager import AvailabilityManager
+    from reminder_service import ReminderService
     
     # Импортируем BookingHandlers
     from bot_handlers import BookingHandlers
@@ -40,12 +41,15 @@ def main():
     storage_manager = StorageManager(google_sheets)
     notification_service = NotificationService(storage_manager)
     
+    # Инициализируем сервис напоминаний
+    reminder_service = ReminderService(storage_manager)
+    
     # Инициализируем менеджер доступности
     availability_manager = AvailabilityManager(storage_manager)
-    storage_manager.availability_manager = availability_manager  # Связываем
+    storage_manager.availability_manager = availability_manager
     
     master_panel = MasterPanel(storage_manager, notification_service)
-    master_panel.set_availability_manager(availability_manager)  # Связываем
+    master_panel.set_availability_manager(availability_manager)
     
     booking_handlers = BookingHandlers(storage_manager, notification_service)
     
@@ -54,12 +58,12 @@ def main():
         NAME, PHONE, DATE, TIME, SERVICE, CONFIRM, 
         BOOKING_ACTION_SELECT, CANCEL_CONFIRM,
         RESCHEDULE_DATE, RESCHEDULE_TIME, RESCHEDULE_CONFIRM
-    ) = range(11)  # 11 состояний (0-10)
+    ) = range(11)
     
     # Состояния для мастера - должны быть отдельными
     (
         MASTER_RESCHEDULE_DATE, MASTER_RESCHEDULE_TIME, MASTER_RESCHEDULE_CONFIRM
-    ) = range(100, 103)  # Используем другие номера (100-102)
+    ) = range(100, 103)
     
     # Создаем приложение
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -67,6 +71,18 @@ def main():
     def is_master(update):
         """Проверяет, является ли пользователь мастером"""
         return str(update.effective_user.id) == str(MASTER_CHAT_ID)
+    
+    # === Обработчик callback для напоминаний ===
+    async def handle_reminder_callback_wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик callback от кнопок напоминаний"""
+        query = update.callback_query
+        data = query.data
+        
+        if data.startswith('pause_reminders_') or data.startswith('disable_reminders_'):
+            await reminder_service.handle_reminder_callback(update, context, data)
+        else:
+            await query.answer()
+            await query.edit_message_text("❌ Неизвестная команда")
     
     # === ConversationHandler для записи ===
     booking_conv_handler = ConversationHandler(
@@ -105,23 +121,23 @@ def main():
                           booking_handlers.view_bookings)
         ],
         states={
-            BOOKING_ACTION_SELECT: [  # Состояние 6
+            BOOKING_ACTION_SELECT: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, 
                               booking_handlers.select_booking_action)
             ],
-            CANCEL_CONFIRM: [  # Состояние 7
+            CANCEL_CONFIRM: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, 
                               booking_handlers.confirm_cancel_booking)
             ],
-            RESCHEDULE_DATE: [  # Состояние 8
+            RESCHEDULE_DATE: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, 
                               booking_handlers.get_reschedule_date)
             ],
-            RESCHEDULE_TIME: [  # Состояние 9
+            RESCHEDULE_TIME: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, 
                               booking_handlers.get_reschedule_time)
             ],
-            RESCHEDULE_CONFIRM: [  # Состояние 10
+            RESCHEDULE_CONFIRM: [
                 MessageHandler(filters.TEXT & ~filters.COMMAND, 
                               booking_handlers.confirm_reschedule)
             ],
@@ -181,24 +197,170 @@ def main():
         persistent=False
     )
     
+    # === Команда для управления напоминаниями ===
+    async def reminders_settings(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показывает настройки напоминаний"""
+        from datetime import datetime  # Добавляем импорт здесь
+        user_id = update.effective_user.id
+        user_settings = reminder_service.get_user_settings(user_id)
+        
+        enabled_emoji = "✅" if user_settings.get('enabled', True) else "❌"
+        reminder_24h_emoji = "✅" if user_settings.get('reminder_24h', True) else "❌"
+        reminder_2h_emoji = "✅" if user_settings.get('reminder_2h', True) else "❌"
+        
+        pause_until = user_settings.get('pause_until')
+        pause_text = ""
+        if pause_until:
+            try:
+                pause_dt = datetime.fromisoformat(pause_until)
+                if pause_dt > datetime.now():
+                    pause_text = f"\n⏸️ Напоминания приостановлены до: {pause_dt.strftime('%d.%m.%Y %H:%M')}"
+                else:
+                    pause_text = "\n✅ Напоминания активны"
+            except:
+                pause_text = "\n✅ Напоминания активны"
+        else:
+            pause_text = "\n✅ Напоминания активны"
+        
+        message = (
+            f"🔔 <b>Настройки напоминаний</b>\n\n"
+            f"Вы будете получать напоминания:\n"
+            f"{reminder_24h_emoji} <b>За 24 часа</b> до записи\n"
+            f"{reminder_2h_emoji} <b>За 2 часа</b> до записи\n\n"
+            f"{enabled_emoji} <b>Статус:</b> {'Включены' if user_settings.get('enabled', True) else 'Отключены'}\n"
+            f"{pause_text}\n\n"
+            f"<i>Выберите действие:</i>"
+        )
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("✅ Включить напоминания", callback_data="reminders_enable"),
+                InlineKeyboardButton("❌ Выключить напоминания", callback_data="reminders_disable")
+            ],
+            [
+                InlineKeyboardButton("⏰ За 24 часа", 
+                                   callback_data=f"reminders_toggle_24h_{'off' if user_settings.get('reminder_24h', True) else 'on'}"),
+                InlineKeyboardButton("⏱️ За 2 часа", 
+                                   callback_data=f"reminders_toggle_2h_{'off' if user_settings.get('reminder_2h', True) else 'on'}")
+            ],
+            [
+                InlineKeyboardButton("⏸️ Приостановить на сутки", callback_data="reminders_pause_24"),
+                InlineKeyboardButton("⏸️ Приостановить на 3 дня", callback_data="reminders_pause_72")
+            ],
+            [
+                InlineKeyboardButton("⏸️ Приостановить на неделю", callback_data="reminders_pause_168"),
+                InlineKeyboardButton("🚫 Отключить навсегда", callback_data="reminders_disable_forever")
+            ],
+            [
+                InlineKeyboardButton("🔙 Назад в меню", callback_data="reminders_back")
+            ]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await update.message.reply_text(
+            message,
+            reply_markup=reply_markup,
+            parse_mode='HTML'
+        )
+    
+    # === Обработчик callback для настроек напоминаний ===
+    async def handle_reminder_settings_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обрабатывает callback от настроек напоминаний"""
+        query = update.callback_query
+        await query.answer()
+        
+        data = query.data
+        user_id = update.effective_user.id
+        
+        if data == "reminders_enable":
+            reminder_service.enable_reminders(user_id)
+            await query.edit_message_text(
+                "✅ Напоминания включены. Вы будете получать уведомления:\n"
+                "• За 24 часа до записи\n"
+                "• За 2 часа до записи",
+                parse_mode='HTML'
+            )
+            
+        elif data == "reminders_disable":
+            reminder_service.disable_reminders(user_id)
+            await query.edit_message_text(
+                "❌ Напоминания отключены. Вы больше не будете получать уведомления о записях.",
+                parse_mode='HTML'
+            )
+            
+        elif data == "reminders_disable_forever":
+            reminder_service.disable_reminders(user_id)
+            await query.edit_message_text(
+                "🚫 Напоминания отключены навсегда.\n"
+                "Вы можете включить их снова через настройки бота.",
+                parse_mode='HTML'
+            )
+            
+        elif data.startswith("reminders_toggle_"):
+            parts = data.split('_')
+            if len(parts) >= 4:
+                reminder_type = parts[2]  # 24h или 2h
+                action = parts[3]  # on или off
+                
+                new_value = action == 'on'
+                updates = {f'reminder_{reminder_type}': new_value}
+                reminder_service.update_user_settings(user_id, updates)
+                
+                time_text = "24 часа" if reminder_type == "24h" else "2 часа"
+                status = "включено" if new_value else "отключено"
+                await query.edit_message_text(
+                    f"✅ Напоминание за {time_text} {status}.",
+                    parse_mode='HTML'
+                )
+                
+        elif data.startswith("reminders_pause_"):
+            parts = data.split('_')
+            if len(parts) >= 3:
+                duration_hours = int(parts[2])  # 24, 72 или 168
+                pause_until = reminder_service.pause_reminders(user_id, duration_hours)
+                
+                duration_text = reminder_service._get_duration_text(duration_hours)
+                await query.edit_message_text(
+                    f"⏸️ Напоминания приостановлены на {duration_text}.\n"
+                    f"Вы снова будете получать их после {pause_until.strftime('%d.%m.%Y %H:%M')}.",
+                    parse_mode='HTML'
+                )
+                
+        elif data == "reminders_back":
+            await query.delete_message()
+            await booking_handlers.start(update, context)
+    
     # === Добавляем обработчики ===
     
-    # 1. Обработчик callback-кнопок
+    # 1. Обработчик callback-кнопок мастера
     application.add_handler(CallbackQueryHandler(
         master_panel.handle_callback,
         pattern="^(action_|reschedule_|view_|menu_|availability_|work_hours_|save_hours_|set_day_off_|remove_day_off_)"
     ))
     
-    # 2. ConversationHandler для переноса записей (мастер)
+    # 2. Обработчик callback-кнопок напоминаний
+    application.add_handler(CallbackQueryHandler(
+        handle_reminder_callback_wrapper,
+        pattern="^(pause_reminders_|disable_reminders_)"
+    ))
+    
+    # 3. Обработчик callback-кнопок настроек напоминаний
+    application.add_handler(CallbackQueryHandler(
+        handle_reminder_settings_callback,
+        pattern="^(reminders_enable|reminders_disable|reminders_toggle_|reminders_pause_|reminders_back|reminders_disable_forever)"
+    ))
+    
+    # 4. ConversationHandler для переноса записей (мастер)
     application.add_handler(master_reschedule_conv_handler)
     
-    # 3. ConversationHandler для управления записями (клиент - объединенный)
+    # 5. ConversationHandler для управления записями (клиент - объединенный)
     application.add_handler(bookings_management_conv_handler)
     
-    # 4. ConversationHandler для создания записи
+    # 6. ConversationHandler для создания записи
     application.add_handler(booking_conv_handler)
     
-    # 5. Команда для меню мастера
+    # 7. Команда для меню мастера
     async def send_master_menu(update, context):
         """Команда для отправки меню мастера"""
         if str(update.effective_chat.id) != MASTER_CHAT_ID:
@@ -209,10 +371,13 @@ def main():
     
     application.add_handler(CommandHandler("master", send_master_menu))
     
-    # 6. Обработчик команды /start
+    # 8. Команда для настроек напоминаний
+    application.add_handler(CommandHandler("reminders", reminders_settings))
+    
+    # 9. Обработчик команды /start
     application.add_handler(CommandHandler("start", booking_handlers.start))
     
-    # 7. Обработчик информационных кнопок главного меню
+    # 10. Обработчик информационных кнопок главного меню
     async def handle_info_buttons(update, context):
         """Обработчик информационных кнопок главного меню"""
         text = update.message.text
@@ -232,6 +397,8 @@ def main():
                 booking_handlers._get_support_info(),
                 reply_markup=booking_handlers._get_main_menu()
             )
+        elif text == '🔔 Настройки напоминаний':
+            await reminders_settings(update, context)
         else:
             await update.message.reply_text(
                 "Пожалуйста, используйте меню ниже ⬇️",
@@ -241,17 +408,17 @@ def main():
         return ConversationHandler.END
     
     application.add_handler(MessageHandler(
-        filters.Regex('^(ℹ️ О нас|📞 Контакты|👨‍💻 Поддержка)$'), 
+        filters.Regex('^(ℹ️ О нас|📞 Контакты|👨‍💻 Поддержка|🔔 Настройки напоминаний)$'), 
         handle_info_buttons
     ))
     
-    # 8. Обработчик неизвестных команд
+    # 11. Обработчик неизвестных команд
     application.add_handler(MessageHandler(
         filters.COMMAND, 
         booking_handlers.handle_unknown
     ))
     
-    # 9. Запасной обработчик текстовых сообщений
+    # 12. Запасной обработчик текстовых сообщений
     async def handle_text_messages(update, context):
         """Обрабатывает текстовые сообщения"""
         # Проверяем, является ли пользователь мастером
@@ -278,7 +445,7 @@ def main():
         handle_text_messages
     ))
     
-    # 10. Обработчик для любого другого контента
+    # 13. Обработчик для любого другого контента
     application.add_handler(MessageHandler(
         filters.ALL, 
         booking_handlers.handle_unknown
@@ -310,16 +477,28 @@ def main():
     
     application.add_error_handler(error_handler)
     
+    # Запускаем сервис напоминаний
+    reminder_service.start()
+    
     # Отправляем меню мастера при запуске
     async def post_init(application):
         try:
             print(f"🔄 Отправка меню мастера в чат {MASTER_CHAT_ID}...")
             await master_panel.send_master_menu(application.bot, MASTER_CHAT_ID)
             print("✅ Меню мастера отправлено при запуске")
+            
+            print("✅ Сервис напоминаний запущен")
+            
         except Exception as e:
             print(f"⚠️ Не удалось отправить меню мастера при запуске: {e}")
     
     application.post_init = post_init
+    
+    # Останавливаем сервисы при завершении
+    async def shutdown(application):
+        print("🛑 Остановка сервисов...")
+        await reminder_service.stop()
+        print("✅ Все сервисы остановлены")
     
     # Запускаем бота
     print("✅ Бот запущен!")
@@ -327,12 +506,28 @@ def main():
     print("📱 Перейдите в Telegram и найдите вашего бота")
     print("👑 Мастер получит уведомления и меню управления")
     print("💼 Команда /master - открыть панель управления")
+    print("🔔 Команда /reminders - настройки напоминаний")
     
     # Проверяем MASTER_CHAT_ID
     if not MASTER_CHAT_ID or MASTER_CHAT_ID == "ваш_chat_id_здесь":
         print("❌ ВНИМАНИЕ: MASTER_CHAT_ID не установлен в .env файле!")
     
-    application.run_polling()
+    try:
+        await application.initialize()
+        await application.start()
+        await application.post_init(application)
+        await application.updater.start_polling()
+        
+        # Держим бота запущенным
+        await asyncio.Event().wait()
+        
+    except KeyboardInterrupt:
+        print("\n🛑 Бот остановлен пользователем")
+    finally:
+        # Останавливаем сервисы при завершении
+        await shutdown(application)
+        await application.stop()
 
 if __name__ == '__main__':
-    main()
+    import asyncio
+    asyncio.run(main())
