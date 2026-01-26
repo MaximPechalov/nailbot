@@ -1,20 +1,25 @@
 """
 Основные обработчики команд для клиентов
-Обновлено: кнопка переноса объединена с просмотром записей
+Обновлено: использование переменных конфигурации
 """
 
 from telegram import Update, ReplyKeyboardMarkup, ReplyKeyboardRemove, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, ConversationHandler
 from datetime import datetime, timedelta
 import re
-from config import MASTER_CHAT_ID
+from config import (
+    MASTER_CHAT_ID, 
+    SALON_NAME, SALON_ADDRESS, WORKING_HOURS,
+    MASTER_PHONE, MASTER_EMAIL,
+    INSTAGRAM_URL, VK_URL, TELEGRAM_CHANNEL
+)
 
-# Определяем состояния (должно совпадать с main.py)
+# Определяем состояния
 (
     NAME, PHONE, DATE, TIME, SERVICE, CONFIRM, 
     BOOKING_ACTION_SELECT, CANCEL_CONFIRM,
     RESCHEDULE_DATE, RESCHEDULE_TIME, RESCHEDULE_CONFIRM
-) = range(11)  # 11 состояний (0-10)
+) = range(11)
 
 class BookingHandlers:
     def __init__(self, storage_manager, notification_service):
@@ -22,7 +27,7 @@ class BookingHandlers:
         self.notifications = notification_service
     
     def _get_main_menu(self):
-        """Создает главное меню (обновлено: убрана кнопка переноса)"""
+        """Создает главное меню"""
         keyboard = [
             ['📝 Записаться на маникюр'],
             ['📅 Мои записи'],
@@ -30,6 +35,63 @@ class BookingHandlers:
             ['👨‍💻 Поддержка']
         ]
         return ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=False)
+    
+    def _get_about_info(self):
+        """Возвращает информацию 'О нас'"""
+        return f"""
+💅 {SALON_NAME}
+
+🕒 Режим работы: {WORKING_HOURS}
+📍 Адрес: {SALON_ADDRESS}
+
+Мы специализируемся на качественном маникюре и педикюре.
+Используем только профессиональные материалы и инструменты.
+
+Наша миссия - делать ваши ногти красивыми и ухоженными!
+"""
+    
+    def _get_contacts_info(self):
+        """Возвращает контактную информацию"""
+        # Извлекаем username из ссылки/упоминания
+        instagram_username = INSTAGRAM_URL.split('/')[-1] if INSTAGRAM_URL else 'manicure_beauty'
+        vk_username = VK_URL.split('/')[-1] if VK_URL else 'manicure_beauty'
+        
+        return f"""
+📞 Наши контакты:
+
+☎️ Телефон: {MASTER_PHONE}
+📍 Адрес: {SALON_ADDRESS}
+🕒 Часы работы: {WORKING_HOURS}
+✉️ Email: {MASTER_EMAIL}
+
+📱 Социальные сети:
+Instagram: @{instagram_username}
+VK: @{vk_username}
+Telegram-канал: {TELEGRAM_CHANNEL}
+"""
+    
+    def _get_support_info(self):
+        """Возвращает информацию о поддержке"""
+        return f"""
+Если у вас возникли проблемы с записью или вопросы:
+
+☎️ Позвоните: {MASTER_PHONE}
+✉️ Напишите на email: {MASTER_EMAIL}
+📱 Напишите в Telegram-канал: {TELEGRAM_CHANNEL}
+
+Мы работаем {WORKING_HOURS} и ответим вам в ближайшее время!
+"""
+    
+    def _get_services_keyboard(self):
+        """Создает клавиатуру с услугами"""
+        keyboard = [
+            ['💅 Классический маникюр - 1500₽'],
+            ['✨ Маникюр + покрытие - 2500₽'],
+            ['👠 Педикюр - 2000₽'],
+            ['🎨 Дизайн ногтей - от 500₽'],
+            ['💎 Наращивание ногтей - 3500₽']
+        ]
+        return ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     
     def _get_date_keyboard(self, start_day=1, days=5):
         """Создает клавиатуру с датами на указанное количество дней вперед"""
@@ -139,6 +201,36 @@ class BookingHandlers:
         )
         return ConversationHandler.END
     
+    async def handle_main_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обработчик главного меню (только информационные кнопки)"""
+        text = update.message.text
+        
+        if text == 'ℹ️ О нас':
+            await update.message.reply_text(
+                self._get_about_info(),
+                reply_markup=self._get_main_menu()
+            )
+        elif text == '📞 Контакты':
+            await update.message.reply_text(
+                self._get_contacts_info(),
+                reply_markup=self._get_main_menu()
+            )
+        elif text == '👨‍💻 Поддержка':
+            await update.message.reply_text(
+                self._get_support_info(),
+                reply_markup=self._get_main_menu()
+            )
+        elif text == '📅 Мои записи':
+            # Перенаправляем в обработчик просмотра записей
+            return await self.view_bookings(update, context)
+        else:
+            await update.message.reply_text(
+                "Пожалуйста, используйте меню ниже ⬇️",
+                reply_markup=self._get_main_menu()
+            )
+        
+        return ConversationHandler.END
+    
     async def view_bookings(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показывает записи пользователя с кнопками управления"""
         user_id = update.effective_user.id
@@ -199,7 +291,7 @@ class BookingHandlers:
             message += "Выберите действие для записи или вернитесь в меню:"
             await update.message.reply_text(message, reply_markup=reply_markup)
             
-            return BOOKING_ACTION_SELECT  # Возвращаем состояние BOOKING_ACTION_SELECT (6)
+            return BOOKING_ACTION_SELECT
             
         except Exception as e:
             print(f"❌ Ошибка при получении записей: {e}")
@@ -401,7 +493,7 @@ class BookingHandlers:
                 reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
                 
                 await update.message.reply_text(message, reply_markup=reply_markup)
-                return CANCEL_CONFIRM  # Возвращаем состояние CANCEL_CONFIRM (7)
+                return CANCEL_CONFIRM
                 
         except (ValueError, IndexError) as e:
             print(f"❌ Ошибка обработки выбора записи: {e}")
@@ -456,7 +548,7 @@ class BookingHandlers:
                     message,
                     reply_markup=self._get_date_keyboard()
                 )
-                return RESCHEDULE_DATE  # Возвращаем состояние RESCHEDULE_DATE (8)
+                return RESCHEDULE_DATE
                 
         except (ValueError, IndexError) as e:
             print(f"❌ Ошибка обработки выбора записи: {e}")
@@ -528,7 +620,7 @@ class BookingHandlers:
                 "и не позднее чем через 30 дней.",
                 reply_markup=ReplyKeyboardRemove()
             )
-            return RESCHEDULE_DATE  # Возвращаем состояние RESCHEDULE_DATE (8)
+            return RESCHEDULE_DATE
         
         date_match = re.search(r'(\d{2}\.\d{2}\.\d{4})', user_input)
         
@@ -549,7 +641,7 @@ class BookingHandlers:
                     "Пожалуйста, выберите дату из списка:",
                     reply_markup=self._get_date_keyboard()
                 )
-                return RESCHEDULE_DATE  # Возвращаем состояние RESCHEDULE_DATE (8)
+                return RESCHEDULE_DATE
                 
         except ValueError:
             await update.message.reply_text(
@@ -559,7 +651,7 @@ class BookingHandlers:
                 "Или выберите из предложенных вариантов:",
                 reply_markup=self._get_date_keyboard()
             )
-            return RESCHEDULE_DATE  # Возвращаем состояние RESCHEDULE_DATE (8)
+            return RESCHEDULE_DATE
         
         context.user_data['new_date'] = date_str
         
@@ -575,7 +667,7 @@ class BookingHandlers:
             "⏰ Выберите новое время для записи:",
             reply_markup=reply_markup
         )
-        return RESCHEDULE_TIME  # Возвращаем состояние RESCHEDULE_TIME (9)
+        return RESCHEDULE_TIME
     
     async def get_reschedule_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Получает новое время для переноса"""
@@ -617,7 +709,7 @@ class BookingHandlers:
         reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
         
         await update.message.reply_text(message, reply_markup=reply_markup)
-        return RESCHEDULE_CONFIRM  # Возвращаем состояние RESCHEDULE_CONFIRM (10)
+        return RESCHEDULE_CONFIRM
     
     async def confirm_reschedule(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Подтверждение переноса записи"""
@@ -746,7 +838,7 @@ class BookingHandlers:
         if first_name:
             context.user_data['profile_name'] = first_name
         
-        return NAME  # Возвращаем состояние NAME (0)
+        return NAME
     
     async def get_name(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Обрабатываем выбор имени"""
@@ -766,13 +858,13 @@ class BookingHandlers:
                     "Пожалуйста, введите ваше имя:",
                     reply_markup=ReplyKeyboardRemove()
                 )
-                return NAME  # Возвращаем состояние NAME (0)
+                return NAME
         elif user_choice == 'Ввести другое имя':
             await update.message.reply_text(
                 "✏️ Введите ваше имя:",
                 reply_markup=ReplyKeyboardRemove()
             )
-            return NAME  # Возвращаем состояние NAME (0)
+            return NAME
         else:
             context.user_data['name'] = update.message.text
         
@@ -801,7 +893,7 @@ class BookingHandlers:
                 reply_markup=ReplyKeyboardRemove()
             )
         
-        return PHONE  # Возвращаем состояние PHONE (1)
+        return PHONE
     
     async def handle_name_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Получаем введенное имя напрямую"""
@@ -834,7 +926,7 @@ class BookingHandlers:
                 reply_markup=ReplyKeyboardRemove()
             )
         
-        return PHONE  # Возвращаем состояние PHONE (1)
+        return PHONE
     
     async def get_phone(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Получаем телефон и проверяем формат"""
@@ -860,19 +952,19 @@ class BookingHandlers:
                         f"Доступные даты на ближайшие 5 дней:",
                         reply_markup=self._get_date_keyboard()
                     )
-                    return DATE  # Возвращаем состояние DATE (2)
+                    return DATE
                 else:
                     await update.message.reply_text(
                         "❌ Неверный формат телефона в сохраненных данных.\n"
                         "Пожалуйста, введите номер вручную:"
                     )
-                    return PHONE  # Возвращаем состояние PHONE (1)
+                    return PHONE
             else:
                 await update.message.reply_text(
                     "❌ Не удалось извлечь номер телефона.\n"
                     "Пожалуйста, введите номер вручную:"
                 )
-                return PHONE  # Возвращаем состояние PHONE (1)
+                return PHONE
         
         phone = user_input
         
@@ -893,7 +985,7 @@ class BookingHandlers:
                 f"Доступные даты на ближайшие 5 дней:",
                 reply_markup=self._get_date_keyboard()
             )
-            return DATE  # Возвращаем состояние DATE (2)
+            return DATE
         else:
             await update.message.reply_text(
                 "❌ Неверный формат телефона.\n"
@@ -904,7 +996,7 @@ class BookingHandlers:
                 "89123456789\n"
                 "+79123456789"
             )
-            return PHONE  # Возвращаем состояние PHONE (1)
+            return PHONE
     
     async def get_date(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Получаем дату через кнопки или текстом"""
@@ -918,7 +1010,7 @@ class BookingHandlers:
                 "и не позднее чем через 30 дней.",
                 reply_markup=ReplyKeyboardRemove()
             )
-            return DATE  # Возвращаем состояние DATE (2)
+            return DATE
         
         date_match = re.search(r'(\d{2}\.\d{2}\.\d{4})', user_input)
         
@@ -941,7 +1033,7 @@ class BookingHandlers:
                     f"⏰ {name}, выберите удобное время:",
                     reply_markup=reply_markup
                 )
-                return TIME  # Возвращаем состояние TIME (3)
+                return TIME
             else:
                 await update.message.reply_text(
                     "❌ Выбрана некорректная дата.\n"
@@ -949,7 +1041,7 @@ class BookingHandlers:
                     "Пожалуйста, выберите дату из списка:",
                     reply_markup=self._get_date_keyboard()
                 )
-                return DATE  # Возвращаем состояние DATE (2)
+                return DATE
         else:
             date_str = user_input.strip()
             
@@ -972,7 +1064,7 @@ class BookingHandlers:
                         f"⏰ {name}, выберите удобное время:",
                         reply_markup=reply_markup
                     )
-                    return TIME  # Возвращаем состояние TIME (3)
+                    return TIME
                 else:
                     await update.message.reply_text(
                         "❌ Некорректная дата!\n"
@@ -981,7 +1073,7 @@ class BookingHandlers:
                         "✅ Не позднее чем через 30 дней\n\n"
                         "Пожалуйста, введите дату в формате ДД.ММ.ГГГГ:"
                     )
-                    return DATE  # Возвращаем состояние DATE (2)
+                    return DATE
                     
             except ValueError:
                 await update.message.reply_text(
@@ -991,12 +1083,13 @@ class BookingHandlers:
                     "Или выберите из предложенных вариантов:",
                     reply_markup=self._get_date_keyboard()
                 )
-                return DATE  # Возвращаем состояние DATE (2)
+                return DATE
     
     async def get_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Получаем время"""
         context.user_data['time'] = update.message.text
         
+        # Используем стандартные цены (хардкод, можно будет вынести в конфиг позже)
         keyboard = [
             ['💅 Классический маникюр - 1500₽'],
             ['✨ Маникюр + покрытие - 2500₽'],
@@ -1011,7 +1104,7 @@ class BookingHandlers:
             f"💅 {name}, выберите услугу:",
             reply_markup=reply_markup
         )
-        return SERVICE  # Возвращаем состояние SERVICE (4)
+        return SERVICE
     
     async def get_service(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Получаем услугу и показываем подтверждение"""
@@ -1051,7 +1144,7 @@ class BookingHandlers:
             booking_info,
             reply_markup=reply_markup
         )
-        return CONFIRM  # Возвращаем состояние CONFIRM (5)
+        return CONFIRM
     
     async def confirm_booking(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Подтверждение и сохранение записи"""

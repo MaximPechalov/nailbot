@@ -203,28 +203,17 @@ def main():
         
         if text == 'ℹ️ О нас':
             await update.message.reply_text(
-                "💅 Салон маникюра 'Лаковые нежности'\n\n"
-                "🕒 Режим работы: 10:00 - 22:00\n"
-                "📍 Адрес: ул. Красивых ногтей, д. 10\n\n"
-                "Мы делаем ваши ногти красивыми!",
+                booking_handlers._get_about_info(),
                 reply_markup=booking_handlers._get_main_menu()
             )
         elif text == '📞 Контакты':
             await update.message.reply_text(
-                "📞 Наши контакты:\n\n"
-                "☎️ Телефон: +7 (999) 123-45-67\n"
-                "📍 Адрес: ул. Красивых ногтей, д. 10\n"
-                "🕒 Часы работы: 10:00 - 22:00\n\n"
-                "📱 Instagram: @manicure_beauty\n"
-                "📸 VK: vk.com/manicure_beauty",
+                booking_handlers._get_contacts_info(),
                 reply_markup=booking_handlers._get_main_menu()
             )
         elif text == '👨‍💻 Поддержка':
             await update.message.reply_text(
-                "Если у вас возникли проблемы с записью:\n\n"
-                "📱 Напишите нам: @manicure_support\n"
-                "☎️ Позвоните: +7 (999) 123-45-67\n"
-                "✉️ Email: support@manicure.ru",
+                booking_handlers._get_support_info(),
                 reply_markup=booking_handlers._get_main_menu()
             )
         else:
