@@ -47,7 +47,7 @@ class BookingHandlers:
 Мы специализируемся на качественном маникюре и педикюре.
 Используем только профессиональные материалы и инструменты.
 
-Наша миссия - делать ваши ногти красивыми и ухудшенными!
+Наша миссия - делать ваши ногти красивыми и ухоженными!
 """
     
     def _get_contacts_info(self):
@@ -89,7 +89,8 @@ Telegram-канал: {TELEGRAM_CHANNEL}
             ['✨ Маникюр + покрытие - 2500₽'],
             ['👠 Педикюр - 2000₽'],
             ['🎨 Дизайн ногтей - от 500₽'],
-            ['💎 Наращивание ногтей - 3500₽']
+            ['💎 Наращивание ногтей - 3500₽'],
+            ['🔙 Назад']
         ]
         return ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     
@@ -110,7 +111,7 @@ Telegram-канал: {TELEGRAM_CHANNEL}
         
         if not available_dates:
             # Если нет доступных дат
-            keyboard = [['📅 Нет доступных дат']]
+            keyboard = [['📅 Нет доступных дат'], ['🔙 Назад']]
             return ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
         
         keyboard = []
@@ -133,7 +134,7 @@ Telegram-канал: {TELEGRAM_CHANNEL}
         if row:
             keyboard.append(row)
         
-        keyboard.append(['📅 Ввести другую дату'])
+        keyboard.append(['📅 Ввести другую дату', '🔙 Назад'])
         
         return ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     
@@ -149,7 +150,7 @@ Telegram-канал: {TELEGRAM_CHANNEL}
             available_slots = self.storage.availability_manager.get_available_slots(date_str)
             
             if not available_slots:
-                keyboard = [['⏰ Нет свободного времени']]
+                keyboard = [['⏰ Нет свободного времени'], ['🔙 Назад']]
                 return ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
             
             # Группируем слоты по строкам (по 3 в строке)
@@ -166,6 +167,9 @@ Telegram-канал: {TELEGRAM_CHANNEL}
             if row:
                 keyboard.append(row)
             
+            # Добавляем кнопку "Назад"
+            keyboard.append(['🔙 Назад'])
+            
             return ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
         else:
             # Старая логика для обратной совместимости
@@ -173,7 +177,8 @@ Telegram-канал: {TELEGRAM_CHANNEL}
                 ['10:00', '11:00', '12:00'],
                 ['13:00', '14:00', '15:00'],
                 ['16:00', '17:00', '18:00'],
-                ['19:00', '20:00', '21:00']
+                ['19:00', '20:00', '21:00'],
+                ['🔙 Назад']
             ]
             return ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     
@@ -534,7 +539,8 @@ Telegram-канал: {TELEGRAM_CHANNEL}
                 
                 keyboard = [
                     ['✅ Да, отменить запись'],
-                    ['❌ Нет, оставить запись']
+                    ['❌ Нет, оставить запись'],
+                    ['🔙 Назад']
                 ]
                 reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True, one_time_keyboard=True)
                 
@@ -607,7 +613,17 @@ Telegram-канал: {TELEGRAM_CHANNEL}
     
     async def confirm_cancel_booking(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Подтверждение отмены записи"""
-        if 'Да' in update.message.text:
+        user_input = update.message.text
+        
+        if user_input == '🔙 Назад':
+            # Возвращаемся к списку записей
+            await update.message.reply_text(
+                "Возвращаюсь к списку записей...",
+                reply_markup=self._get_main_menu()
+            )
+            return await self.view_bookings(update, context)
+        
+        if 'Да' in user_input:
             booking_to_cancel = context.user_data.get('booking_to_cancel')
             booking_number = context.user_data.get('booking_number')
             
@@ -658,13 +674,22 @@ Telegram-канал: {TELEGRAM_CHANNEL}
         """Получает новую дату для переноса"""
         user_input = update.message.text
         
+        if user_input == '🔙 Назад':
+            # Возвращаемся к списку записей
+            await update.message.reply_text(
+                "Возвращаюсь к списку записей...",
+                reply_markup=self._get_main_menu()
+            )
+            return await self.view_bookings(update, context)
+        
         if user_input == '📅 Ввести другую дату':
             await update.message.reply_text(
                 "📝 Введите новую дату в формате ДД.ММ.ГГГГ\n"
                 "Например: 25.12.2024\n\n"
                 "⚠️ Дата должна быть не ранее завтрашнего дня\n"
-                "и не позднее чем через 30 дней.",
-                reply_markup=ReplyKeyboardRemove()
+                "и не позднее чем через 30 дней.\n\n"
+                "Или нажмите 🔙 Назад для возврата",
+                reply_markup=ReplyKeyboardMarkup([['🔙 Назад']], resize_keyboard=True)
             )
             return RESCHEDULE_DATE
         
@@ -705,15 +730,27 @@ Telegram-канал: {TELEGRAM_CHANNEL}
         keyboard = self._get_time_keyboard(date_str)
         
         await update.message.reply_text(
-            "⏰ Выберите новое время для записи:",
+            f"📅 Вы выбрали {date_str}\n"
+            "⏰ Теперь выберите новое время для записи:",
             reply_markup=keyboard
         )
         return RESCHEDULE_TIME
     
     async def get_reschedule_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Получает новое время для переноса"""
+        user_input = update.message.text
+        
+        if user_input == '🔙 Назад':
+            # Возвращаемся к выбору даты
+            context.user_data.pop('new_date', None)
+            await update.message.reply_text(
+                "Возвращаюсь к выбору даты...",
+                reply_markup=self._get_date_keyboard()
+            )
+            return RESCHEDULE_DATE
+        
         date_str = context.user_data.get('new_date', '')
-        selected_time = update.message.text
+        selected_time = user_input
         
         # Проверяем доступность времени
         if hasattr(self.storage, 'availability_manager'):
@@ -759,7 +796,10 @@ Telegram-канал: {TELEGRAM_CHANNEL}
 Всё верно?
 """
         
-        keyboard = [['✅ Да, всё верно', '❌ Нет, отменить перенос']]
+        keyboard = [
+            ['✅ Да, всё верно', '❌ Нет, отменить перенос'],
+            ['🔙 Назад']
+        ]
         reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
         
         await update.message.reply_text(message, reply_markup=reply_markup)
@@ -767,7 +807,22 @@ Telegram-канал: {TELEGRAM_CHANNEL}
     
     async def confirm_reschedule(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Подтверждение переноса записи"""
-        if 'Да' in update.message.text:
+        user_input = update.message.text
+        
+        if user_input == '🔙 Назад':
+            # Возвращаемся к выбору времени
+            context.user_data.pop('new_time', None)
+            
+            date_str = context.user_data.get('new_date', '')
+            keyboard = self._get_time_keyboard(date_str)
+            
+            await update.message.reply_text(
+                "Возвращаюсь к выбору времени...",
+                reply_markup=keyboard
+            )
+            return RESCHEDULE_TIME
+        
+        if 'Да' in user_input:
             booking = context.user_data.get('booking_to_reschedule', {})
             booking_id = booking.get('booking_id', '')
             new_date = context.user_data.get('new_date', '')
@@ -879,13 +934,15 @@ Telegram-канал: {TELEGRAM_CHANNEL}
         
         keyboard = [
             ['Использовать имя из профиля Telegram'],
-            ['Ввести другое имя']
+            ['Ввести другое имя'],
+            ['🔙 Назад в меню']
         ]
         reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
         
         await update.message.reply_text(
             f"{greeting}\n\n"
-            "Как вас записать?",
+            "Как вас записать?\n\n"
+            "Или нажмите 🔙 Назад для возврата в меню",
             reply_markup=reply_markup
         )
         
@@ -895,10 +952,18 @@ Telegram-канал: {TELEGRAM_CHANNEL}
         return NAME
     
     async def get_name(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Обрабатываем выбор имени"""
-        user_choice = update.message.text
+        """Обрабатываем выбор имени - ИСПРАВЛЕННЫЙ МЕТОД"""
+        user_input = update.message.text
         
-        if user_choice == 'Использовать имя из профиля Telegram':
+        if user_input == '🔙 Назад в меню':
+            await update.message.reply_text(
+                "Возвращаюсь в главное меню...",
+                reply_markup=self._get_main_menu()
+            )
+            context.user_data.clear()  # Очищаем данные
+            return ConversationHandler.END
+        
+        if user_input == 'Использовать имя из профиля Telegram':
             profile_name = context.user_data.get('profile_name', '')
             if profile_name:
                 context.user_data['name'] = profile_name
@@ -910,17 +975,19 @@ Telegram-канал: {TELEGRAM_CHANNEL}
                 await update.message.reply_text(
                     "😕 Не удалось получить имя из профиля.\n"
                     "Пожалуйста, введите ваше имя:",
-                    reply_markup=ReplyKeyboardRemove()
+                    reply_markup=ReplyKeyboardMarkup([['🔙 Назад в меню']], resize_keyboard=True)
                 )
                 return NAME
-        elif user_choice == 'Ввести другое имя':
+        elif user_input == 'Ввести другое имя':
             await update.message.reply_text(
-                "✏️ Введите ваше имя:",
-                reply_markup=ReplyKeyboardRemove()
+                "✏️ Введите ваше имя:\n\n"
+                "Или нажмите 🔙 Назад для возврата в меню",
+                reply_markup=ReplyKeyboardMarkup([['🔙 Назад в меню']], resize_keyboard=True)
             )
             return NAME
         else:
-            context.user_data['name'] = update.message.text
+            # Это введенное имя
+            context.user_data['name'] = user_input
         
         user_id = update.effective_user.id
         saved_phone = self.storage.get_user_phone(user_id)
@@ -929,7 +996,8 @@ Telegram-канал: {TELEGRAM_CHANNEL}
             formatted_phone = self._format_phone(saved_phone)
             keyboard = [
                 [f'Использовать {formatted_phone}'],
-                ['Ввести другой номер']
+                ['Ввести другой номер'],
+                ['🔙 Назад в меню']
             ]
             reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
             
@@ -937,21 +1005,33 @@ Telegram-канал: {TELEGRAM_CHANNEL}
             await update.message.reply_text(
                 f"✅ Отлично, {name}!\n\n"
                 f"📱 У вас есть сохраненный номер: {formatted_phone}\n"
-                "Хотите использовать его или ввести новый?",
+                "Хотите использовать его или ввести новый?\n\n"
+                "Или нажмите 🔙 Назад для возврата в меню",
                 reply_markup=reply_markup
             )
         else:
             await update.message.reply_text(
                 "📱 Введите ваш номер телефона:\n"
-                "Например: +79123456789",
-                reply_markup=ReplyKeyboardRemove()
+                "Например: +79123456789\n\n"
+                "Или нажмите 🔙 Назад для возврата в меню",
+                reply_markup=ReplyKeyboardMarkup([['🔙 Назад в меню']], resize_keyboard=True)
             )
         
         return PHONE
     
     async def handle_name_text(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Получаем введенное имя напрямую"""
-        context.user_data['name'] = update.message.text
+        user_input = update.message.text
+        
+        if user_input == '🔙 Назад в меню':
+            await update.message.reply_text(
+                "Возвращаюсь в главное меню...",
+                reply_markup=self._get_main_menu()
+            )
+            context.user_data.clear()  # Очищаем данные
+            return ConversationHandler.END
+        
+        context.user_data['name'] = user_input
         
         name = context.user_data['name']
         
@@ -962,22 +1042,25 @@ Telegram-канал: {TELEGRAM_CHANNEL}
             formatted_phone = self._format_phone(saved_phone)
             keyboard = [
                 [f'Использовать {formatted_phone}'],
-                ['Ввести другой номер']
+                ['Ввести другой номер'],
+                ['🔙 Назад в меню']
             ]
             reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
             
             await update.message.reply_text(
                 f"✅ Отлично, {name}!\n\n"
                 f"📱 У вас есть сохраненный номер: {formatted_phone}\n"
-                "Хотите использовать его или ввести новый?",
+                "Хотите использовать его или ввести новый?\n\n"
+                "Или нажмите 🔙 Назад для возврата в меню",
                 reply_markup=reply_markup
             )
         else:
             await update.message.reply_text(
                 f"✅ Отлично, {name}!\n\n"
                 "📱 Теперь введите ваш номер телефона:\n"
-                "Например: +79123456789",
-                reply_markup=ReplyKeyboardRemove()
+                "Например: +79123456789\n\n"
+                "Или нажмите 🔙 Назад для возврата в меню",
+                reply_markup=ReplyKeyboardMarkup([['🔙 Назад в меню']], resize_keyboard=True)
             )
         
         return PHONE
@@ -985,6 +1068,14 @@ Telegram-канал: {TELEGRAM_CHANNEL}
     async def get_phone(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Получаем телефон и проверяем формат"""
         user_input = update.message.text
+        
+        if user_input == '🔙 Назад в меню':
+            await update.message.reply_text(
+                "Возвращаюсь в главное меню...",
+                reply_markup=self._get_main_menu()
+            )
+            context.user_data.clear()  # Очищаем данные
+            return ConversationHandler.END
         
         if user_input.startswith('Использовать'):
             phone_match = re.search(r'(\+?\d[\d\s\-\(\)]+)', user_input)
@@ -1010,13 +1101,15 @@ Telegram-канал: {TELEGRAM_CHANNEL}
                 else:
                     await update.message.reply_text(
                         "❌ Неверный формат телефона в сохраненных данных.\n"
-                        "Пожалуйста, введите номер вручную:"
+                        "Пожалуйста, введите номер вручную:",
+                        reply_markup=ReplyKeyboardMarkup([['🔙 Назад в меню']], resize_keyboard=True)
                     )
                     return PHONE
             else:
                 await update.message.reply_text(
                     "❌ Не удалось извлечь номер телефона.\n"
-                    "Пожалуйста, введите номер вручную:"
+                    "Пожалуйста, введите номер вручную:",
+                    reply_markup=ReplyKeyboardMarkup([['🔙 Назад в меню']], resize_keyboard=True)
                 )
                 return PHONE
         
@@ -1048,7 +1141,9 @@ Telegram-канал: {TELEGRAM_CHANNEL}
                 "Примеры корректных номеров:\n"
                 "+7 (912) 345-67-89\n"
                 "89123456789\n"
-                "+79123456789"
+                "+79123456789\n\n"
+                "Или нажмите 🔙 Назад для возврата в меню",
+                reply_markup=ReplyKeyboardMarkup([['🔙 Назад в меню']], resize_keyboard=True)
             )
             return PHONE
     
@@ -1056,13 +1151,48 @@ Telegram-канал: {TELEGRAM_CHANNEL}
         """Получаем дату через кнопки или текстом"""
         user_input = update.message.text
         
+        if user_input == '🔙 Назад':
+            # Возвращаемся к вводу телефона
+            context.user_data.pop('phone', None)
+            
+            user_id = update.effective_user.id
+            saved_phone = self.storage.get_user_phone(user_id)
+            
+            if saved_phone:
+                formatted_phone = self._format_phone(saved_phone)
+                keyboard = [
+                    [f'Использовать {formatted_phone}'],
+                    ['Ввести другой номер'],
+                    ['🔙 Назад в меню']
+                ]
+                reply_markup = ReplyKeyboardMarkup(keyboard, resize_keyboard=True)
+                
+                name = context.user_data.get('name', '')
+                await update.message.reply_text(
+                    f"Возвращаюсь к вводу телефона...\n\n"
+                    f"📱 У вас есть сохраненный номер: {formatted_phone}\n"
+                    "Хотите использовать его или ввести новый?\n\n"
+                    "Или нажмите 🔙 Назад для возврата в меню",
+                    reply_markup=reply_markup
+                )
+            else:
+                await update.message.reply_text(
+                    "Возвращаюсь к вводу телефона...\n\n"
+                    "📱 Введите ваш номер телефона:\n"
+                    "Например: +79123456789\n\n"
+                    "Или нажмите 🔙 Назад для возврата в меню",
+                    reply_markup=ReplyKeyboardMarkup([['🔙 Назад в меню']], resize_keyboard=True)
+                )
+            return PHONE
+        
         if user_input == '📅 Ввести другую дату':
             await update.message.reply_text(
                 "📝 Введите дату вручную в формате ДД.ММ.ГГГГ\n"
                 "Например: 25.12.2024\n\n"
                 "⚠️ Дата должна быть не ранее завтрашнего дня\n"
-                "и не позднее чем через 30 дней.",
-                reply_markup=ReplyKeyboardRemove()
+                "и не позднее чем через 30 дней.\n\n"
+                "Или нажмите 🔙 Назад для возврата",
+                reply_markup=ReplyKeyboardMarkup([['🔙 Назад']], resize_keyboard=True)
             )
             return DATE
         
@@ -1079,6 +1209,7 @@ Telegram-канал: {TELEGRAM_CHANNEL}
                 
                 name = context.user_data.get('name', '')
                 await update.message.reply_text(
+                    f"📅 Вы выбрали {date_str}\n"
                     f"⏰ {name}, выберите удобное время:",
                     reply_markup=keyboard
                 )
@@ -1105,6 +1236,7 @@ Telegram-канал: {TELEGRAM_CHANNEL}
                     
                     name = context.user_data.get('name', '')
                     await update.message.reply_text(
+                        f"📅 Вы выбрали {date_str}\n"
                         f"⏰ {name}, выберите удобное время:",
                         reply_markup=keyboard
                     )
@@ -1115,7 +1247,8 @@ Telegram-канал: {TELEGRAM_CHANNEL}
                         "Дата должна быть:\n"
                         "✅ Не ранее завтрашнего дня\n"
                         "✅ Не позднее чем через 30 дней\n\n"
-                        "Пожалуйста, введите дату в формате ДД.ММ.ГГГГ:"
+                        "Пожалуйста, введите дату в формате ДД.ММ.ГГГГ:",
+                        reply_markup=ReplyKeyboardMarkup([['🔙 Назад']], resize_keyboard=True)
                     )
                     return DATE
                     
@@ -1131,8 +1264,19 @@ Telegram-канал: {TELEGRAM_CHANNEL}
     
     async def get_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Получаем время - обновленная версия с проверкой доступности"""
+        user_input = update.message.text
+        
+        if user_input == '🔙 Назад':
+            # Возвращаемся к выбору даты
+            context.user_data.pop('date', None)
+            await update.message.reply_text(
+                "Возвращаюсь к выбору даты...",
+                reply_markup=self._get_date_keyboard()
+            )
+            return DATE
+        
         date_str = context.user_data.get('date', '')
-        selected_time = update.message.text
+        selected_time = user_input
         
         # Проверяем доступность времени
         if hasattr(self.storage, 'availability_manager'):
@@ -1150,6 +1294,7 @@ Telegram-канал: {TELEGRAM_CHANNEL}
         
         name = context.user_data.get('name', '')
         await update.message.reply_text(
+            f"⏰ Вы выбрали {selected_time}\n"
             f"💅 {name}, выберите услугу:",
             reply_markup=keyboard
         )
@@ -1157,7 +1302,22 @@ Telegram-канал: {TELEGRAM_CHANNEL}
     
     async def get_service(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Получаем услугу и показываем подтверждение"""
-        context.user_data['service'] = update.message.text
+        user_input = update.message.text
+        
+        if user_input == '🔙 Назад':
+            # Возвращаемся к выбору времени
+            context.user_data.pop('time', None)
+            
+            date_str = context.user_data.get('date', '')
+            keyboard = self._get_time_keyboard(date_str)
+            
+            await update.message.reply_text(
+                "Возвращаюсь к выбору времени...",
+                reply_markup=keyboard
+            )
+            return TIME
+        
+        context.user_data['service'] = user_input
         
         name = context.user_data.get('name', '')
         phone = context.user_data.get('phone', '')
@@ -1186,7 +1346,10 @@ Telegram-канал: {TELEGRAM_CHANNEL}
 Всё верно?
 """
         
-        keyboard = [['✅ Да, всё верно', '❌ Нет, исправить']]
+        keyboard = [
+            ['✅ Да, всё верно', '❌ Нет, исправить'],
+            ['🔙 Назад']
+        ]
         reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
         
         await update.message.reply_text(
@@ -1197,7 +1360,21 @@ Telegram-канал: {TELEGRAM_CHANNEL}
     
     async def confirm_booking(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Подтверждение и сохранение записи"""
-        if 'Да' in update.message.text:
+        user_input = update.message.text
+        
+        if user_input == '🔙 Назад':
+            # Возвращаемся к выбору услуги
+            context.user_data.pop('service', None)
+            
+            keyboard = self._get_services_keyboard()
+            
+            await update.message.reply_text(
+                "Возвращаюсь к выбору услуги...",
+                reply_markup=keyboard
+            )
+            return SERVICE
+        
+        if 'Да' in user_input:
             booking_data = {
                 'timestamp': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
                 'name': context.user_data['name'],
@@ -1230,6 +1407,7 @@ Telegram-канал: {TELEGRAM_CHANNEL}
                 reply_markup=self._get_main_menu()
             )
         else:
+            # Пользователь хочет исправить
             await update.message.reply_text(
                 "Давайте начнем запись заново.",
                 reply_markup=self._get_main_menu()
