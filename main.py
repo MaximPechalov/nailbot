@@ -1,5 +1,5 @@
 """
-Основной файл - обновлен для новой логики переносов
+Основной файл - обновлен для новой логики меню
 """
 
 from telegram.ext import Application, CommandHandler, ConversationHandler, MessageHandler, filters, CallbackQueryHandler
@@ -33,16 +33,17 @@ def main():
     
     booking_handlers = BookingHandlers(storage_manager, notification_service)
     
-    # Определяем состояния
+    # Определяем состояния (ВАЖНО: должно совпадать с bot_handlers.py)
     (
         NAME, PHONE, DATE, TIME, SERVICE, CONFIRM, 
-        CANCEL_SELECT, CANCEL_CONFIRM,
-        RESCHEDULE_SELECT, RESCHEDULE_DATE, RESCHEDULE_TIME, RESCHEDULE_CONFIRM
-    ) = range(12)
+        BOOKING_ACTION_SELECT, CANCEL_CONFIRM,
+        RESCHEDULE_DATE, RESCHEDULE_TIME, RESCHEDULE_CONFIRM
+    ) = range(11)  # 11 состояний (0-10)
     
+    # Состояния для мастера - должны быть отдельными
     (
         MASTER_RESCHEDULE_DATE, MASTER_RESCHEDULE_TIME, MASTER_RESCHEDULE_CONFIRM
-    ) = range(100, 103)
+    ) = range(100, 103)  # Используем другие номера (100-102)
     
     # Создаем приложение
     application = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
@@ -76,53 +77,35 @@ def main():
         fallbacks=[
             CommandHandler('cancel', booking_handlers.cancel),
             CommandHandler('start', booking_handlers.start)
-        ]
+        ],
+        name="booking_conversation",
+        persistent=False
     )
     
-    # === ConversationHandler для отмены записей ===
-    cancel_conv_handler = ConversationHandler(
+    # === ConversationHandler для управления записями (объединенный) ===
+    bookings_management_conv_handler = ConversationHandler(
         entry_points=[
             MessageHandler(filters.Regex('^📅 Мои записи$'), 
                           booking_handlers.view_bookings)
         ],
         states={
-            CANCEL_SELECT: [
+            BOOKING_ACTION_SELECT: [  # Состояние 6
                 MessageHandler(filters.TEXT & ~filters.COMMAND, 
-                              booking_handlers.select_booking_to_cancel)
+                              booking_handlers.select_booking_action)
             ],
-            CANCEL_CONFIRM: [
+            CANCEL_CONFIRM: [  # Состояние 7
                 MessageHandler(filters.TEXT & ~filters.COMMAND, 
                               booking_handlers.confirm_cancel_booking)
             ],
-        },
-        fallbacks=[
-            CommandHandler('cancel', booking_handlers.cancel),
-            CommandHandler('start', booking_handlers.start),
-            MessageHandler(filters.Regex('^🔙 Назад в меню$'), 
-                          lambda update, context: booking_handlers.cancel(update, context))
-        ]
-    )
-    
-    # === ConversationHandler для переноса записей (клиент) ===
-    reschedule_conv_handler = ConversationHandler(
-        entry_points=[
-            MessageHandler(filters.Regex('^🔄 Перенести запись$'), 
-                          booking_handlers.start_reschedule)
-        ],
-        states={
-            RESCHEDULE_SELECT: [
-                MessageHandler(filters.TEXT & ~filters.COMMAND, 
-                              booking_handlers.select_booking_to_reschedule)
-            ],
-            RESCHEDULE_DATE: [
+            RESCHEDULE_DATE: [  # Состояние 8
                 MessageHandler(filters.TEXT & ~filters.COMMAND, 
                               booking_handlers.get_reschedule_date)
             ],
-            RESCHEDULE_TIME: [
+            RESCHEDULE_TIME: [  # Состояние 9
                 MessageHandler(filters.TEXT & ~filters.COMMAND, 
                               booking_handlers.get_reschedule_time)
             ],
-            RESCHEDULE_CONFIRM: [
+            RESCHEDULE_CONFIRM: [  # Состояние 10
                 MessageHandler(filters.TEXT & ~filters.COMMAND, 
                               booking_handlers.confirm_reschedule)
             ],
@@ -132,7 +115,9 @@ def main():
             CommandHandler('start', booking_handlers.start),
             MessageHandler(filters.Regex('^🔙 Назад в меню$'), 
                           lambda update, context: booking_handlers.cancel(update, context))
-        ]
+        ],
+        name="bookings_management_conversation",
+        persistent=False
     )
     
     # === ConversationHandler для переноса записей (мастер) ===
@@ -175,7 +160,9 @@ def main():
         },
         fallbacks=[
             MessageHandler(filters.Regex('^❌ Нет, отменить$'), master_cancel_reschedule_wrapper)
-        ]
+        ],
+        name="master_reschedule_conversation",
+        persistent=False
     )
     
     # === Добавляем обработчики ===
@@ -189,16 +176,13 @@ def main():
     # 2. ConversationHandler для переноса записей (мастер)
     application.add_handler(master_reschedule_conv_handler)
     
-    # 3. ConversationHandler для переноса записей (клиент)
-    application.add_handler(reschedule_conv_handler)
+    # 3. ConversationHandler для управления записями (клиент - объединенный)
+    application.add_handler(bookings_management_conv_handler)
     
-    # 4. ConversationHandler для отмены записей
-    application.add_handler(cancel_conv_handler)
-    
-    # 5. ConversationHandler для создания записи
+    # 4. ConversationHandler для создания записи
     application.add_handler(booking_conv_handler)
     
-    # 6. Команда для меню мастера
+    # 5. Команда для меню мастера
     async def send_master_menu(update, context):
         """Команда для отправки меню мастера"""
         if str(update.effective_chat.id) != MASTER_CHAT_ID:
@@ -209,24 +193,63 @@ def main():
     
     application.add_handler(CommandHandler("master", send_master_menu))
     
-    # 7. Обработчик команды /start
+    # 6. Обработчик команды /start
     application.add_handler(CommandHandler("start", booking_handlers.start))
     
-    # 8. Обработчик главного меню
+    # 7. Обработчик информационных кнопок главного меню
+    async def handle_info_buttons(update, context):
+        """Обработчик информационных кнопок главного меню"""
+        text = update.message.text
+        
+        if text == 'ℹ️ О нас':
+            await update.message.reply_text(
+                "💅 Салон маникюра 'Лаковые нежности'\n\n"
+                "🕒 Режим работы: 10:00 - 22:00\n"
+                "📍 Адрес: ул. Красивых ногтей, д. 10\n\n"
+                "Мы делаем ваши ногти красивыми!",
+                reply_markup=booking_handlers._get_main_menu()
+            )
+        elif text == '📞 Контакты':
+            await update.message.reply_text(
+                "📞 Наши контакты:\n\n"
+                "☎️ Телефон: +7 (999) 123-45-67\n"
+                "📍 Адрес: ул. Красивых ногтей, д. 10\n"
+                "🕒 Часы работы: 10:00 - 22:00\n\n"
+                "📱 Instagram: @manicure_beauty\n"
+                "📸 VK: vk.com/manicure_beauty",
+                reply_markup=booking_handlers._get_main_menu()
+            )
+        elif text == '👨‍💻 Поддержка':
+            await update.message.reply_text(
+                "Если у вас возникли проблемы с записью:\n\n"
+                "📱 Напишите нам: @manicure_support\n"
+                "☎️ Позвоните: +7 (999) 123-45-67\n"
+                "✉️ Email: support@manicure.ru",
+                reply_markup=booking_handlers._get_main_menu()
+            )
+        else:
+            await update.message.reply_text(
+                "Пожалуйста, используйте меню ниже ⬇️",
+                reply_markup=booking_handlers._get_main_menu()
+            )
+        
+        return ConversationHandler.END
+    
     application.add_handler(MessageHandler(
         filters.Regex('^(ℹ️ О нас|📞 Контакты|👨‍💻 Поддержка)$'), 
-        booking_handlers.handle_main_menu
+        handle_info_buttons
     ))
     
-    # 9. Обработчик неизвестных команд
+    # 8. Обработчик неизвестных команд
     application.add_handler(MessageHandler(
         filters.COMMAND, 
         booking_handlers.handle_unknown
     ))
     
-    # 10. Запасной обработчик
+    # 9. Запасной обработчик текстовых сообщений
     async def handle_text_messages(update, context):
         """Обрабатывает текстовые сообщения"""
+        # Проверяем, является ли пользователь мастером
         if is_master(update):
             if 'master_reschedule' in context.user_data:
                 current_state = context.user_data.get('_conversation_state')
@@ -237,14 +260,20 @@ def main():
                 elif current_state == MASTER_RESCHEDULE_CONFIRM:
                     return await master_reschedule_confirm_wrapper(update, context)
         
-        return await booking_handlers.handle_unknown(update, context)
+        # Для клиентов - просто показываем главное меню
+        await update.message.reply_text(
+            "Извините, я не понимаю эту команду.\n"
+            "Пожалуйста, используйте меню ниже ⬇️",
+            reply_markup=booking_handlers._get_main_menu()
+        )
+        return ConversationHandler.END
     
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND, 
         handle_text_messages
     ))
     
-    # 11. Обработчик для любого другого контента
+    # 10. Обработчик для любого другого контента
     application.add_handler(MessageHandler(
         filters.ALL, 
         booking_handlers.handle_unknown
