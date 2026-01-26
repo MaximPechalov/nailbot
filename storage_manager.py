@@ -25,6 +25,9 @@ class StorageManager:
         # Инициализируем менеджер переносов
         from reschedule_manager import RescheduleManager
         self.reschedule_manager = RescheduleManager(self)
+        
+        # Менеджер доступности будет установлен позже
+        self.availability_manager = None
     
     def _ensure_data_dir(self):
         """Создает папку data если её нет"""

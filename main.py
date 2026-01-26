@@ -2,9 +2,18 @@
 Основной файл - обновлен для новой логики меню
 """
 
-from telegram.ext import Application, CommandHandler, ConversationHandler, MessageHandler, filters, CallbackQueryHandler
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ConversationHandler, MessageHandler, filters, CallbackQueryHandler, ContextTypes
 from config import TELEGRAM_BOT_TOKEN, MASTER_CHAT_ID
 import os
+import logging
+
+# Настройка логирования
+logging.basicConfig(
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
 def main():
     print("🤖 Бот запускается...")
@@ -23,13 +32,20 @@ def main():
     from storage_manager import StorageManager
     from notification_service import NotificationService
     from master_panel import MasterPanel
+    from availability_manager import AvailabilityManager  # <-- Добавить
     
     # Импортируем BookingHandlers
     from bot_handlers import BookingHandlers
     
     storage_manager = StorageManager(google_sheets)
     notification_service = NotificationService(storage_manager)
+    
+    # Инициализируем менеджер доступности
+    availability_manager = AvailabilityManager(storage_manager)
+    storage_manager.availability_manager = availability_manager  # Связываем
+    
     master_panel = MasterPanel(storage_manager, notification_service)
+    master_panel.set_availability_manager(availability_manager)  # Связываем
     
     booking_handlers = BookingHandlers(storage_manager, notification_service)
     
@@ -170,7 +186,7 @@ def main():
     # 1. Обработчик callback-кнопок
     application.add_handler(CallbackQueryHandler(
         master_panel.handle_callback,
-        pattern="^(action_|reschedule_|view_|menu_)"
+        pattern="^(action_|reschedule_|view_|menu_|availability_|work_hours_|save_hours_|set_day_off_|remove_day_off_)"
     ))
     
     # 2. ConversationHandler для переноса записей (мастер)
@@ -267,6 +283,32 @@ def main():
         filters.ALL, 
         booking_handlers.handle_unknown
     ))
+    
+    # Обработчик ошибок
+    async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обрабатывает ошибки"""
+        logger.error(f"Ошибка при обработке обновления {update}: {context.error}")
+        
+        if context.error:
+            try:
+                # Если это ошибка "Message is not modified", просто игнорируем
+                if "Message is not modified" in str(context.error):
+                    return
+                    
+                # Другие ошибки логируем
+                error_message = f"⚠️ Произошла ошибка: {context.error}"
+                
+                # Отправляем сообщение только если есть куда отправлять
+                if update and update.effective_chat:
+                    await context.bot.send_message(
+                        chat_id=update.effective_chat.id,
+                        text="❌ Произошла ошибка. Пожалуйста, попробуйте позже."
+                    )
+                    
+            except Exception as e:
+                logger.error(f"Ошибка в обработчике ошибок: {e}")
+    
+    application.add_error_handler(error_handler)
     
     # Отправляем меню мастера при запуске
     async def post_init(application):

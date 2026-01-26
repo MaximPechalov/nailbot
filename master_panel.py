@@ -13,11 +13,16 @@ class MasterPanel:
     def __init__(self, storage_manager, notification_service):
         self.storage = storage_manager
         self.notifications = notification_service
+        self.availability_manager = None
         
         # Состояния для переноса мастером
         self.MASTER_RESCHEDULE_DATE = 100
         self.MASTER_RESCHEDULE_TIME = 101
         self.MASTER_RESCHEDULE_CONFIRM = 102
+    
+    def set_availability_manager(self, availability_manager):
+        """Устанавливает менеджер доступности"""
+        self.availability_manager = availability_manager
     
     def _get_date_keyboard_master(self, start_day=1, days=5):
         """Создает клавиатуру с датами для мастера"""
@@ -123,6 +128,58 @@ class MasterPanel:
         
         elif data == 'menu_master':
             await self._show_main_menu(update)
+        
+        # Добавляем обработку availability callback
+        elif data.startswith('availability_'):
+            await self.handle_availability_callback(update, context)
+        elif data.startswith('work_hours_'):
+            await self.handle_availability_callback(update, context)
+        elif data.startswith('save_hours_'):
+            # Исправляем обработку callback данных
+            parts = data.split('_')
+            if len(parts) >= 5:
+                # Проверяем, не нажата ли кнопка "Сохранить и выйти"
+                if parts[2] == 'exit':
+                    # Формат: save_hours_exit_{day}_{start}_{end}_{enabled}
+                    if len(parts) >= 7:
+                        day = parts[3]
+                        start = parts[4]
+                        end = parts[5]
+                        enabled = parts[6] == 'true' if len(parts) > 6 else True
+                        await self.save_work_hours_and_exit(update, context, day, start, end, enabled)
+                else:
+                    # Формат: save_hours_{day}_{start}_{end}_{enabled}
+                    day = parts[2]
+                    start = parts[3]
+                    end = parts[4]
+                    enabled = parts[5] == 'true' if len(parts) > 5 else True
+                    await self.save_work_hours_and_stay(update, context, day, start, end, enabled)
+        elif data.startswith('set_day_off_'):
+            parts = data.split('_')
+            if len(parts) >= 4:
+                date_str = '_'.join(parts[3:])  # На случай даты с разделителями
+                if self.availability_manager:
+                    success = self.availability_manager.set_day_off(date_str)
+                    if success:
+                        await query.edit_message_text(
+                            f"✅ {date_str} установлен как выходной день",
+                            reply_markup=InlineKeyboardMarkup([[
+                                InlineKeyboardButton("🔙 Назад", callback_data="availability_menu")
+                            ]])
+                        )
+        elif data.startswith('remove_day_off_'):
+            parts = data.split('_')
+            if len(parts) >= 4:
+                date_str = '_'.join(parts[3:])
+                if self.availability_manager:
+                    success = self.availability_manager.remove_day_off(date_str)
+                    if success:
+                        await query.edit_message_text(
+                            f"✅ {date_str} удален из выходных дней",
+                            reply_markup=InlineKeyboardMarkup([[
+                                InlineKeyboardButton("🔙 Назад", callback_data="availability_menu")
+                            ]])
+                        )
     
     async def _handle_booking_action(self, update: Update, context: ContextTypes.DEFAULT_TYPE, 
                                    action: str, booking_id: str):
@@ -348,6 +405,9 @@ class MasterPanel:
             [
                 InlineKeyboardButton("🔄 Запросы переноса", callback_data="view_reschedule_requests"),
                 InlineKeyboardButton("📨 Предложения", callback_data="view_reschedule_offers")
+            ],
+            [
+                InlineKeyboardButton("🕒 Управление расписанием", callback_data="availability_menu"),
             ],
             [
                 InlineKeyboardButton("✅ Выполненные", callback_data="view_completed"),
@@ -611,7 +671,7 @@ class MasterPanel:
             reschedule_requests = self.storage.get_reschedule_requests()
             
             if not reschedule_requests:
-                message = "📭 Нет запросов на перенос от клиентов"
+                message = "📭 Нет запросы на перенос от клиентов"
                 keyboard = [[InlineKeyboardButton("🔙 В меню", callback_data="menu_master")]]
             else:
                 message = "<b>🔄 Запросы на перенос от клиентов:</b>\n\n"
@@ -745,6 +805,9 @@ class MasterPanel:
                 InlineKeyboardButton("📨 Предложения", callback_data="view_reschedule_offers")
             ],
             [
+                InlineKeyboardButton("🕒 Управление расписанием", callback_data="availability_menu"),
+            ],
+            [
                 InlineKeyboardButton("✅ Выполненные", callback_data="view_completed"),
                 InlineKeyboardButton("📊 Статистика", callback_data="view_stats")
             ],
@@ -771,6 +834,9 @@ class MasterPanel:
             [
                 InlineKeyboardButton("🔄 Запросы переноса", callback_data="view_reschedule_requests"),
                 InlineKeyboardButton("📨 Предложения", callback_data="view_reschedule_offers")
+            ],
+            [
+                InlineKeyboardButton("🕒 Управление расписанием", callback_data="availability_menu"),
             ],
             [
                 InlineKeyboardButton("✅ Выполненные", callback_data="view_completed"),
@@ -805,6 +871,674 @@ class MasterPanel:
     async def _show_main_menu_from_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Показывает главное меню из обычного сообщения"""
         await self.send_master_menu(context.bot, MASTER_CHAT_ID)
+    
+    # === Методы для управления доступностью ===
+    
+    async def show_availability_menu(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показывает меню управления доступностью"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.availability_manager:
+            await query.edit_message_text(
+                "❌ Менеджер доступности не инициализирован",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 В меню", callback_data="menu_master")
+                ]])
+            )
+            return
+        
+        message = "🎛️ Управление расписанием\n\n"
+        message += self.availability_manager.get_work_hours_display()
+        
+        keyboard = [
+            [
+                InlineKeyboardButton("📅 Настроить рабочие часы", 
+                                   callback_data="availability_work_hours"),
+                InlineKeyboardButton("🚫 Установить выходной", 
+                                   callback_data="availability_day_off")
+            ],
+            [
+                InlineKeyboardButton("📋 Показать свободные слоты", 
+                                   callback_data="availability_view_slots"),
+                InlineKeyboardButton("🗑️ Удалить выходной", 
+                                   callback_data="availability_remove_day_off")
+            ],
+            [
+                InlineKeyboardButton("🔙 В меню", callback_data="menu_master"),
+                InlineKeyboardButton("🔄 Обновить", callback_data="availability_menu")
+            ]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        try:
+            await query.edit_message_text(
+                message,
+                reply_markup=reply_markup,
+                parse_mode='HTML'
+            )
+        except Exception as e:
+            if "Message is not modified" in str(e):
+                print("ℹ️ Сообщение не изменилось, пропускаем edit")
+            else:
+                print(f"⚠️ Ошибка редактирования, отправляем новое: {e}")
+                await query.message.reply_text(
+                    message,
+                    reply_markup=reply_markup,
+                    parse_mode='HTML'
+                )
+    
+    async def handle_availability_callback(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Обрабатывает callback для управления доступностью"""
+        query = update.callback_query
+        await query.answer()
+        
+        if not self.availability_manager:
+            await query.edit_message_text(
+                "❌ Менеджер доступности не инициализирован",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 В меню", callback_data="menu_master")
+                ]])
+            )
+            return
+        
+        data = query.data
+        
+        if data == "availability_menu":
+            await self.show_availability_menu(update, context)
+        elif data == "availability_work_hours":
+            await self.show_work_hours_setup(update, context)
+        elif data == "availability_day_off":
+            await self.set_day_off(update, context)
+        elif data == "availability_remove_day_off":
+            await self.remove_day_off(update, context)
+        elif data == "availability_view_slots":
+            await self.view_available_slots(update, context)
+        elif data.startswith("work_hours_"):
+            parts = data.split("_")
+            if len(parts) >= 3:
+                day = parts[2]
+                await self.edit_work_hours_day(update, context, day)
+    
+    async def show_work_hours_setup(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показывает настройки рабочих часов по дням недели"""
+        query = update.callback_query
+        
+        if not self.availability_manager:
+            await query.edit_message_text(
+                "❌ Менеджер доступности не инициализирован",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 В меню", callback_data="menu_master")
+                ]])
+            )
+            return
+        
+        days_ru = {
+            'monday': 'Понедельник',
+            'tuesday': 'Вторник',
+            'wednesday': 'Среда',
+            'thursday': 'Четверг',
+            'friday': 'Пятница',
+            'saturday': 'Суббота',
+            'sunday': 'Воскресенье'
+        }
+        
+        message = "🕒 Настройка рабочих часов\n\n"
+        message += "Выберите день для настройки:\n"
+        
+        keyboard = []
+        for eng_day, ru_day in days_ru.items():
+            settings = self.availability_manager.work_hours.get(eng_day, {})
+            enabled = settings.get('enabled', False)  # Исправлено: по умолчанию False
+            start = settings.get('start', '--:--')
+            end = settings.get('end', '--:--')
+            
+            status = "✅" if enabled else "❌"
+            display_text = f"{status} {ru_day}"
+            
+            keyboard.append([
+                InlineKeyboardButton(display_text, 
+                                   callback_data=f"work_hours_{eng_day}")
+            ])
+        
+        keyboard.append([
+            InlineKeyboardButton("🔙 Назад", callback_data="availability_menu"),
+            InlineKeyboardButton("📋 Показать расписание", callback_data="availability_menu")
+        ])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        try:
+            await query.edit_message_text(
+                message,
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            if "Message is not modified" in str(e):
+                print("ℹ️ Сообщение не изменилось, пропускаем edit")
+            else:
+                print(f"⚠️ Ошибка редактирования, отправляем новое: {e}")
+                await query.message.reply_text(
+                    message,
+                    reply_markup=reply_markup
+                )
+    
+    async def edit_work_hours_day(self, update: Update, context: ContextTypes.DEFAULT_TYPE, day: str):
+        """Редактирование рабочих часов для конкретного дня - ИСПРАВЛЕННЫЙ МЕТОД"""
+        query = update.callback_query
+        
+        if not self.availability_manager:
+            await query.edit_message_text(
+                "❌ Менеджер доступности не инициализирован",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 В меню", callback_data="menu_master")
+                ]])
+            )
+            return
+        
+        days_ru = {
+            'monday': 'Понедельник',
+            'tuesday': 'Вторник',
+            'wednesday': 'Среда',
+            'thursday': 'Четверг',
+            'friday': 'Пятница',
+            'saturday': 'Суббота',
+            'sunday': 'Воскресенье'
+        }
+        
+        # ВАЖНОЕ ИСПРАВЛЕНИЕ: правильно определяем текущее состояние
+        settings = self.availability_manager.work_hours.get(day, {})
+        current_start = settings.get('start', '10:00')
+        current_end = settings.get('end', '20:00')
+        current_enabled = settings.get('enabled', False)  # Исправлено: по умолчанию False
+        
+        message = f"🕒 Настройка {days_ru[day]}\n\n"
+        message += f"Текущие настройки:\n"
+        message += f"Статус: {'✅ Работаю' if current_enabled else '❌ Выходной'}\n"
+        if current_enabled:
+            message += f"Часы: {current_start} - {current_end}\n\n"
+        else:
+            message += f"Часы: выходной\n\n"
+        message += "Выберите параметр для изменения:"
+        
+        keyboard = []
+        
+        if current_enabled:
+            # Кнопки для времени начала (сгруппированы по 3)
+            start_times = ['08:00', '09:00', '10:00', '11:00', '12:00', '13:00']
+            for i in range(0, len(start_times), 3):
+                row = []
+                for time in start_times[i:i+3]:
+                    # Подсвечиваем текущее время начала
+                    if time == current_start:
+                        button_text = f"⏰ •{time}•"
+                    else:
+                        button_text = f"⏰ {time}"
+                    row.append(InlineKeyboardButton(
+                        button_text, 
+                        callback_data=f"save_hours_{day}_{time}_{current_end}_true"  # enabled=true
+                    ))
+                keyboard.append(row)
+            
+            # Кнопки для времени окончания (сгруппированы по 3)
+            end_times = ['17:00', '18:00', '19:00', '20:00', '21:00', '22:00']
+            for i in range(0, len(end_times), 3):
+                row = []
+                for time in end_times[i:i+3]:
+                    # Подсвечиваем текущее время окончания
+                    if time == current_end:
+                        button_text = f"🕓 •{time}•"
+                    else:
+                        button_text = f"🕓 {time}"
+                    row.append(InlineKeyboardButton(
+                        button_text, 
+                        callback_data=f"save_hours_{day}_{current_start}_{time}_true"  # enabled=true
+                    ))
+                keyboard.append(row)
+        else:
+            # Если день выходной, НЕ показываем кнопки времени - только варианты включения
+            message += "\nСейчас этот день выходной. Вы можете включить его с предустановленными часами:"
+            
+            # Варианты для включения дня
+            keyboard.append([
+                InlineKeyboardButton(
+                    "✅ Включить с 10:00-20:00", 
+                    callback_data=f"save_hours_{day}_10:00_20:00_true"
+                )
+            ])
+            keyboard.append([
+                InlineKeyboardButton(
+                    "✅ Включить с 11:00-19:00", 
+                    callback_data=f"save_hours_{day}_11:00_19:00_true"
+                )
+            ])
+            keyboard.append([
+                InlineKeyboardButton(
+                    "✅ Включить с 09:00-18:00", 
+                    callback_data=f"save_hours_{day}_09:00_18:00_true"
+                )
+            ])
+        
+        # Кнопки включения/выключения
+        if current_enabled:
+            keyboard.append([
+                InlineKeyboardButton(
+                    "❌ Сделать выходным", 
+                    callback_data=f"save_hours_{day}_{current_start}_{current_end}_false"
+                )
+            ])
+        else:
+            # День уже выходной, показываем кнопку для включения со свободным выбором времени
+            # (уже показана выше)
+            pass
+        
+        keyboard.append([
+            InlineKeyboardButton("💾 Сохранить и выйти", 
+                               callback_data=f"save_hours_exit_{day}_{current_start}_{current_end}_{'true' if current_enabled else 'false'}"),
+            InlineKeyboardButton("🔙 Назад", callback_data="availability_work_hours")
+        ])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        try:
+            await query.edit_message_text(
+                message,
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            if "Message is not modified" in str(e):
+                print("ℹ️ Сообщение не изменилось, пропускаем edit")
+            else:
+                print(f"⚠️ Ошибка редактирования, отправляем новое: {e}")
+                await query.message.reply_text(
+                    message,
+                    reply_markup=reply_markup
+                )
+    
+    async def save_work_hours_and_stay(self, update: Update, context: ContextTypes.DEFAULT_TYPE, 
+                                     day: str, start: str, end: str, enabled: bool):
+        """Сохраняет рабочие часы для дня и остается в меню редактирования - ИСПРАВЛЕННЫЙ"""
+        query = update.callback_query
+        
+        if not self.availability_manager:
+            await query.edit_message_text(
+                "❌ Менеджер доступности не инициализирован",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 В меню", callback_data="menu_master")
+                ]])
+            )
+            return
+        
+        # Сохраняем изменения
+        success = self.availability_manager.update_work_hours(day, start, end, enabled)
+        
+        if success:
+            # Получаем обновленные настройки
+            settings = self.availability_manager.work_hours.get(day, {})
+            current_start = settings.get('start', start)
+            current_end = settings.get('end', end)
+            current_enabled = settings.get('enabled', enabled)  # Исправлено: получаем из настроек
+            
+            # Обновляем сообщение с новыми настройками
+            days_ru = {
+                'monday': 'Понедельник',
+                'tuesday': 'Вторник',
+                'wednesday': 'Среда',
+                'thursday': 'Четверг',
+                'friday': 'Пятница',
+                'saturday': 'Суббота',
+                'sunday': 'Воскресенье'
+            }
+            
+            message = f"✅ Настройки для {days_ru[day]} обновлены!\n\n"
+            message += f"Статус: {'✅ Работаю' if current_enabled else '❌ Выходной'}\n"
+            if current_enabled:
+                message += f"Часы: {current_start} - {current_end}\n\n"
+            else:
+                message += f"Часы: выходной\n\n"
+            message += "Выберите следующий параметр для изменения:"
+            
+            keyboard = []
+            
+            if current_enabled:
+                # Кнопки для времени начала
+                start_times = ['08:00', '09:00', '10:00', '11:00', '12:00', '13:00']
+                for i in range(0, len(start_times), 3):
+                    row = []
+                    for time in start_times[i:i+3]:
+                        # Подсвечиваем текущее время
+                        if time == current_start:
+                            button_text = f"⏰ •{time}•"
+                        else:
+                            button_text = f"⏰ {time}"
+                        row.append(InlineKeyboardButton(
+                            button_text, 
+                            callback_data=f"save_hours_{day}_{time}_{current_end}_{'true' if current_enabled else 'false'}"
+                        ))
+                    keyboard.append(row)
+                
+                # Кнопки для времени окончания
+                end_times = ['17:00', '18:00', '19:00', '20:00', '21:00', '22:00']
+                for i in range(0, len(end_times), 3):
+                    row = []
+                    for time in end_times[i:i+3]:
+                        # Подсвечиваем текущее время
+                        if time == current_end:
+                            button_text = f"🕓 •{time}•"
+                        else:
+                            button_text = f"🕓 {time}"
+                        row.append(InlineKeyboardButton(
+                            button_text, 
+                            callback_data=f"save_hours_{day}_{current_start}_{time}_{'true' if current_enabled else 'false'}"
+                        ))
+                    keyboard.append(row)
+                
+                # Кнопка для выключения
+                keyboard.append([
+                    InlineKeyboardButton(
+                        "❌ Сделать выходным", 
+                        callback_data=f"save_hours_{day}_{current_start}_{current_end}_false"
+                    )
+                ])
+            else:
+                # Если день выходной, показываем варианты для включения
+                message += "\nСейчас этот день выходной. Вы можете включить его с предустановленными часами:"
+                
+                keyboard.append([
+                    InlineKeyboardButton(
+                        "✅ Включить с 10:00-20:00", 
+                        callback_data=f"save_hours_{day}_10:00_20:00_true"
+                    )
+                ])
+                keyboard.append([
+                    InlineKeyboardButton(
+                        "✅ Включить с 11:00-19:00", 
+                        callback_data=f"save_hours_{day}_11:00_19:00_true"
+                    )
+                ])
+                keyboard.append([
+                    InlineKeyboardButton(
+                        "✅ Включить с 09:00-18:00", 
+                        callback_data=f"save_hours_{day}_09:00_18:00_true"
+                    )
+                ])
+            
+            keyboard.append([
+                InlineKeyboardButton("💾 Сохранить и выйти", 
+                                   callback_data=f"save_hours_exit_{day}_{current_start}_{current_end}_{'true' if current_enabled else 'false'}"),
+                InlineKeyboardButton("🔙 Назад", callback_data="availability_work_hours")
+            ])
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            try:
+                await query.edit_message_text(
+                    message,
+                    reply_markup=reply_markup
+                )
+            except Exception as e:
+                if "Message is not modified" in str(e):
+                    print("ℹ️ Сообщение не изменилось, пропускаем edit")
+                else:
+                    print(f"⚠️ Ошибка редактирования, отправляем новое: {e}")
+                    await query.message.reply_text(
+                        message,
+                        reply_markup=reply_markup
+                    )
+        else:
+            message = "❌ Ошибка при сохранении настроек"
+            keyboard = [
+                [InlineKeyboardButton("🔙 Назад", callback_data=f"work_hours_{day}")],
+                [InlineKeyboardButton("📋 Показать расписание", callback_data="availability_menu")]
+            ]
+            
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            try:
+                await query.edit_message_text(
+                    message,
+                    reply_markup=reply_markup
+                )
+            except Exception as e:
+                if "Message is not modified" in str(e):
+                    print("ℹ️ Сообщение не изменилось, пропускаем edit")
+                else:
+                    print(f"⚠️ Ошибка редактирования, отправляем новое: {e}")
+                    await query.message.reply_text(
+                        message,
+                        reply_markup=reply_markup
+                    )
+    
+    async def save_work_hours_and_exit(self, update: Update, context: ContextTypes.DEFAULT_TYPE, 
+                                     day: str, start: str, end: str, enabled: bool):
+        """Сохраняет рабочие часы для дня и возвращается в меню"""
+        query = update.callback_query
+        
+        if not self.availability_manager:
+            await query.edit_message_text(
+                "❌ Менеджер доступности не инициализирован",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 В меню", callback_data="menu_master")
+                ]])
+            )
+            return
+        
+        # Сохраняем изменения
+        success = self.availability_manager.update_work_hours(day, start, end, enabled)
+        
+        if success:
+            message = f"✅ Настройки для дня обновлены!\n\n"
+            message += self.availability_manager.get_work_hours_display()
+        else:
+            message = "❌ Ошибка при сохранении настроек"
+        
+        keyboard = [
+            [InlineKeyboardButton("🔙 Назад", callback_data="availability_work_hours")],
+            [InlineKeyboardButton("📋 Показать расписание", callback_data="availability_menu")]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        try:
+            await query.edit_message_text(
+                message,
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            if "Message is not modified" in str(e):
+                print("ℹ️ Сообщение не изменилось, пропускаем edit")
+            else:
+                print(f"⚠️ Ошибка редактирования, отправляем новое: {e}")
+                await query.message.reply_text(
+                    message,
+                    reply_markup=reply_markup
+                )
+    
+    async def set_day_off(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Устанавливает выходной на конкретную дату"""
+        query = update.callback_query
+        
+        if not self.availability_manager:
+            await query.edit_message_text(
+                "❌ Менеджер доступности не инициализирован",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 В меню", callback_data="menu_master")
+                ]])
+            )
+            return
+        
+        # Генерируем клавиатуру с датами на ближайшие 30 дней
+        keyboard = []
+        today = datetime.now()
+        row = []
+        
+        for i in range(1, 31):
+            date = today + timedelta(days=i)
+            date_str = date.strftime('%d.%m.%Y')
+            
+            row.append(InlineKeyboardButton(
+                date_str,
+                callback_data=f"set_day_off_{date_str}"
+            ))
+            
+            if len(row) == 3:
+                keyboard.append(row)
+                row = []
+        
+        if row:
+            keyboard.append(row)
+        
+        keyboard.append([
+            InlineKeyboardButton("🔙 Назад", callback_data="availability_menu")
+        ])
+        
+        message = "📅 Выберите дату для установки выходного дня:\n"
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        try:
+            await query.edit_message_text(
+                message,
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            if "Message is not modified" in str(e):
+                print("ℹ️ Сообщение не изменилось, пропускаем edit")
+            else:
+                print(f"⚠️ Ошибка редактирования, отправляем новое: {e}")
+                await query.message.reply_text(
+                    message,
+                    reply_markup=reply_markup
+                )
+    
+    async def remove_day_off(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Удаляет выходной на конкретную дату"""
+        query = update.callback_query
+        
+        if not self.availability_manager:
+            await query.edit_message_text(
+                "❌ Менеджер доступности не инициализирован",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 В меню", callback_data="menu_master")
+                ]])
+            )
+            return
+        
+        days_off = self.availability_manager.get_days_off()
+        
+        if not days_off:
+            await query.edit_message_text(
+                "📭 Нет установленных выходных дней",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Назад", callback_data="availability_menu")
+                ]])
+            )
+            return
+        
+        keyboard = []
+        row = []
+        
+        for i, date_str in enumerate(days_off):
+            row.append(InlineKeyboardButton(
+                f"❌ {date_str}",
+                callback_data=f"remove_day_off_{date_str}"
+            ))
+            
+            if len(row) == 2:
+                keyboard.append(row)
+                row = []
+        
+        if row:
+            keyboard.append(row)
+        
+        keyboard.append([
+            InlineKeyboardButton("🔙 Назад", callback_data="availability_menu")
+        ])
+        
+        message = "📅 Выберите дату для удаления выходного:\n"
+        message += f"Всего выходных: {len(days_off)}\n\n"
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        try:
+            await query.edit_message_text(
+                message,
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            if "Message is not modified" in str(e):
+                print("ℹ️ Сообщение не изменилось, пропускаем edit")
+            else:
+                print(f"⚠️ Ошибка редактирования, отправляем новое: {e}")
+                await query.message.reply_text(
+                    message,
+                    reply_markup=reply_markup
+                )
+    
+    async def view_available_slots(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Показывает свободные слоты на ближайшие дни"""
+        query = update.callback_query
+        
+        if not self.availability_manager:
+            await query.edit_message_text(
+                "❌ Менеджер доступности не инициализирован",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 В меню", callback_data="menu_master")
+                ]])
+            )
+            return
+        
+        # Получаем доступные даты на ближайшие 7 дней
+        available_dates = self.availability_manager.get_available_dates(days_ahead=7)
+        
+        if not available_dates:
+            await query.edit_message_text(
+                "📭 Нет свободных слотов на ближайшие 7 дней",
+                reply_markup=InlineKeyboardMarkup([[
+                    InlineKeyboardButton("🔙 Назад", callback_data="availability_menu")
+                ]])
+            )
+            return
+        
+        message = "📅 Свободные слоты на ближайшие 7 дней:\n\n"
+        
+        for date_str in available_dates[:10]:  # Показываем первые 10 дней
+            available_slots = self.availability_manager.get_available_slots(date_str)
+            date_obj = datetime.strptime(date_str, '%d.%m.%Y')
+            day_name = self._get_day_name(date_obj.weekday())
+            
+            message += f"📅 {date_str} ({day_name}):\n"
+            message += f"   Свободные слоты: {len(available_slots)}\n"
+            if available_slots:
+                # Показываем первые 5 слотов
+                slots_display = ", ".join(available_slots[:5])
+                if len(available_slots) > 5:
+                    slots_display += f" ... и ещё {len(available_slots) - 5}"
+                message += f"   {slots_display}\n"
+            message += "\n"
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Обновить", callback_data="availability_view_slots")],
+            [InlineKeyboardButton("🔙 Назад", callback_data="availability_menu")]
+        ]
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        try:
+            await query.edit_message_text(
+                message,
+                reply_markup=reply_markup
+            )
+        except Exception as e:
+            if "Message is not modified" in str(e):
+                print("ℹ️ Сообщение не изменилось, пропускаем edit")
+            else:
+                print(f"⚠️ Ошибка редактирования, отправляем новое: {e}")
+                await query.message.reply_text(
+                    message,
+                    reply_markup=reply_markup
+                )
     
     # === Вспомогательные методы форматирования ===
     

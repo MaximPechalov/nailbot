@@ -47,7 +47,7 @@ class BookingHandlers:
 Мы специализируемся на качественном маникюре и педикюре.
 Используем только профессиональные материалы и инструменты.
 
-Наша миссия - делать ваши ногти красивыми и ухоженными!
+Наша миссия - делать ваши ногти красивыми и ухудшенными!
 """
     
     def _get_contacts_info(self):
@@ -94,34 +94,45 @@ Telegram-канал: {TELEGRAM_CHANNEL}
         return ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     
     def _get_date_keyboard(self, start_day=1, days=5):
-        """Создает клавиатуру с датами на указанное количество дней вперед"""
+        """Создает клавиатуру с доступными датами"""
+        # Используем availability_manager для получения доступных дат
+        if hasattr(self.storage, 'availability_manager'):
+            available_dates = self.storage.availability_manager.get_available_dates(days_ahead=days)
+            # Берем первые N дат
+            available_dates = available_dates[:days]
+        else:
+            # Старая логика для обратной совместимости
+            available_dates = []
+            today = datetime.now()
+            for i in range(start_day, start_day + days):
+                date = today + timedelta(days=i)
+                available_dates.append(date.strftime('%d.%m.%Y'))
+        
+        if not available_dates:
+            # Если нет доступных дат
+            keyboard = [['📅 Нет доступных дат']]
+            return ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        
         keyboard = []
         row = []
         
-        # Текущая дата
-        today = datetime.now()
-        
-        # Добавляем даты
-        for i in range(start_day, start_day + days):
-            date = today + timedelta(days=i)
-            date_str = date.strftime('%d.%m.%Y')
-            
-            # Форматируем красиво
-            day_name = self._get_day_name(date.weekday())
-            date_display = f"{date_str} ({day_name})"
+        for i, date_str in enumerate(available_dates):
+            try:
+                date_obj = datetime.strptime(date_str, '%d.%m.%Y')
+                day_name = self._get_day_name(date_obj.weekday())
+                date_display = f"{date_str} ({day_name})"
+            except:
+                date_display = date_str
             
             row.append(date_display)
             
-            # Каждые 2 даты в строку
             if len(row) == 2:
                 keyboard.append(row)
                 row = []
         
-        # Добавляем последнюю строку если есть остаток
         if row:
             keyboard.append(row)
         
-        # Добавляем кнопку для ввода другой даты
         keyboard.append(['📅 Ввести другую дату'])
         
         return ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
@@ -130,6 +141,41 @@ Telegram-канал: {TELEGRAM_CHANNEL}
         """Возвращает русское название дня недели"""
         days = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс']
         return days[weekday]
+    
+    def _get_time_keyboard(self, date_str: str):
+        """Создает клавиатуру с доступным временем для указанной даты"""
+        # Используем availability_manager для получения доступного времени
+        if hasattr(self.storage, 'availability_manager'):
+            available_slots = self.storage.availability_manager.get_available_slots(date_str)
+            
+            if not available_slots:
+                keyboard = [['⏰ Нет свободного времени']]
+                return ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+            
+            # Группируем слоты по строкам (по 3 в строке)
+            keyboard = []
+            row = []
+            
+            for i, time_slot in enumerate(available_slots):
+                row.append(time_slot)
+                
+                if len(row) == 3:
+                    keyboard.append(row)
+                    row = []
+            
+            if row:
+                keyboard.append(row)
+            
+            return ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        else:
+            # Старая логика для обратной совместимости
+            keyboard = [
+                ['10:00', '11:00', '12:00'],
+                ['13:00', '14:00', '15:00'],
+                ['16:00', '17:00', '18:00'],
+                ['19:00', '20:00', '21:00']
+            ]
+            return ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
     
     def _is_valid_date(self, date_str):
         """Проверяет, корректна ли дата и не в прошлом"""
@@ -655,23 +701,31 @@ Telegram-канал: {TELEGRAM_CHANNEL}
         
         context.user_data['new_date'] = date_str
         
-        keyboard = [
-            ['10:00', '11:00', '12:00'],
-            ['13:00', '14:00', '15:00'],
-            ['16:00', '17:00', '18:00'],
-            ['19:00', '20:00', '21:00']
-        ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        # Получаем доступное время для выбранной даты
+        keyboard = self._get_time_keyboard(date_str)
         
         await update.message.reply_text(
             "⏰ Выберите новое время для записи:",
-            reply_markup=reply_markup
+            reply_markup=keyboard
         )
         return RESCHEDULE_TIME
     
     async def get_reschedule_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
         """Получает новое время для переноса"""
-        context.user_data['new_time'] = update.message.text
+        date_str = context.user_data.get('new_date', '')
+        selected_time = update.message.text
+        
+        # Проверяем доступность времени
+        if hasattr(self.storage, 'availability_manager'):
+            if not self.storage.availability_manager.is_slot_available(date_str, selected_time):
+                await update.message.reply_text(
+                    f"❌ Время {selected_time} на {date_str} уже занято.\n"
+                    f"Пожалуйста, выберите другое время:",
+                    reply_markup=self._get_time_keyboard(date_str)
+                )
+                return RESCHEDULE_TIME
+        
+        context.user_data['new_time'] = selected_time
         
         booking = context.user_data.get('booking_to_reschedule', {})
         new_date = context.user_data.get('new_date', '')
@@ -1020,18 +1074,13 @@ Telegram-канал: {TELEGRAM_CHANNEL}
             if self._is_valid_date(date_str):
                 context.user_data['date'] = date_str
                 
-                keyboard = [
-                    ['10:00', '11:00', '12:00'],
-                    ['13:00', '14:00', '15:00'],
-                    ['16:00', '17:00', '18:00'],
-                    ['19:00', '20:00', '21:00']
-                ]
-                reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+                # Получаем доступное время для выбранной даты
+                keyboard = self._get_time_keyboard(date_str)
                 
                 name = context.user_data.get('name', '')
                 await update.message.reply_text(
                     f"⏰ {name}, выберите удобное время:",
-                    reply_markup=reply_markup
+                    reply_markup=keyboard
                 )
                 return TIME
             else:
@@ -1051,18 +1100,13 @@ Telegram-канал: {TELEGRAM_CHANNEL}
                 if self._is_valid_date(date_str):
                     context.user_data['date'] = date_str
                     
-                    keyboard = [
-                        ['10:00', '11:00', '12:00'],
-                        ['13:00', '14:00', '15:00'],
-                        ['16:00', '17:00', '18:00'],
-                        ['19:00', '20:00', '21:00']
-                    ]
-                    reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+                    # Получаем доступное время для выбранной даты
+                    keyboard = self._get_time_keyboard(date_str)
                     
                     name = context.user_data.get('name', '')
                     await update.message.reply_text(
                         f"⏰ {name}, выберите удобное время:",
-                        reply_markup=reply_markup
+                        reply_markup=keyboard
                     )
                     return TIME
                 else:
@@ -1086,23 +1130,28 @@ Telegram-канал: {TELEGRAM_CHANNEL}
                 return DATE
     
     async def get_time(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
-        """Получаем время"""
-        context.user_data['time'] = update.message.text
+        """Получаем время - обновленная версия с проверкой доступности"""
+        date_str = context.user_data.get('date', '')
+        selected_time = update.message.text
         
-        # Используем стандартные цены (хардкод, можно будет вынести в конфиг позже)
-        keyboard = [
-            ['💅 Классический маникюр - 1500₽'],
-            ['✨ Маникюр + покрытие - 2500₽'],
-            ['👠 Педикюр - 2000₽'],
-            ['🎨 Дизайн ногтей - от 500₽'],
-            ['💎 Наращивание ногтей - 3500₽']
-        ]
-        reply_markup = ReplyKeyboardMarkup(keyboard, one_time_keyboard=True, resize_keyboard=True)
+        # Проверяем доступность времени
+        if hasattr(self.storage, 'availability_manager'):
+            if not self.storage.availability_manager.is_slot_available(date_str, selected_time):
+                await update.message.reply_text(
+                    f"❌ Время {selected_time} на {date_str} уже занято.\n"
+                    f"Пожалуйста, выберите другое время:",
+                    reply_markup=self._get_time_keyboard(date_str)
+                )
+                return TIME
+        
+        context.user_data['time'] = selected_time
+        
+        keyboard = self._get_services_keyboard()
         
         name = context.user_data.get('name', '')
         await update.message.reply_text(
             f"💅 {name}, выберите услугу:",
-            reply_markup=reply_markup
+            reply_markup=keyboard
         )
         return SERVICE
     
